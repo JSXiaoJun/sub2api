@@ -77,7 +77,7 @@ func newTimedRecord() *timedRecord {
 }
 
 func (w *timedRecord) Write(p []byte) (int, error) {
-	w.buf.Write(p)
+	_, _ = w.buf.Write(p)
 	for _, marker := range []string{"sub2api.timing", "Hello", `"usage"`} {
 		if _, seen := w.marks[marker]; !seen && bytes.Contains(p, []byte(marker)) {
 			w.marks[marker] = time.Since(w.start)

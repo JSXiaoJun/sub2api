@@ -191,7 +191,7 @@ func TestAPIKeyPluginRolloutDeterministicAndNativeFallback(t *testing.T) {
 		} else {
 			require.NoError(t, err)
 			require.NotNil(t, resp)
-			resp.Body.Close()
+			_ = resp.Body.Close()
 		}
 	}
 	require.Positive(t, upstream.doCalls)
@@ -199,5 +199,5 @@ func TestAPIKeyPluginRolloutDeterministicAndNativeFallback(t *testing.T) {
 	r := keyPluginRequest(t, "POST", "/v1/responses", `{"stream":true}`)
 	resp, err := svc.doOpenAIUpstream(r, "", &Account{ID: 1, Platform: PlatformOpenAI, Type: AccountTypeAPIKey})
 	require.NoError(t, err)
-	resp.Body.Close()
+	_ = resp.Body.Close()
 }
