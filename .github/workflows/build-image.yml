@@ -1,0 +1,86 @@
+name: Build image
+
+# 只构建并推送容器镜像，不创建 GitHub Release、不改 VERSION 文件。
+# 用于给指定分支出一份可部署镜像（例如插件适配分支）。
+on:
+  workflow_dispatch:
+    inputs:
+      image_tag:
+        description: 'Image tag (without registry/repo)'
+        required: true
+        default: '0.2.19-apikey-plugin'
+      version:
+        description: 'Value baked into main.Version / plugin compatibility'
+        required: true
+        default: '0.2.19'
+      platform:
+        description: 'Target platform'
+        required: true
+        default: 'linux/amd64'
+        type: choice
+        options:
+          - linux/amd64
+          - linux/amd64,linux/arm64
+
+concurrency:
+  group: build-image-${{ github.ref }}-${{ inputs.image_tag }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  image:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Resolve image name and build metadata
+        id: meta
+        run: |
+          image="ghcr.io/${GITHUB_REPOSITORY,,}"
+          echo "image=$image" >> "$GITHUB_OUTPUT"
+          echo "short_sha=${GITHUB_SHA::12}" >> "$GITHUB_OUTPUT"
+          echo "date=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$GITHUB_OUTPUT"
+
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Login to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ./Dockerfile
+          platforms: ${{ inputs.platform }}
+          push: true
+          build-args: |
+            VERSION=${{ inputs.version }}
+            COMMIT=${{ github.sha }}
+            DATE=${{ steps.meta.outputs.date }}
+          tags: |
+            ${{ steps.meta.outputs.image }}:${{ inputs.image_tag }}
+            ${{ steps.meta.outputs.image }}:${{ inputs.image_tag }}-${{ steps.meta.outputs.short_sha }}
+          labels: |
+            org.opencontainers.image.version=${{ inputs.version }}
+            org.opencontainers.image.revision=${{ github.sha }}
+            org.opencontainers.image.source=https://github.com/${{ github.repository }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Summary
+        run: |
+          {
+            echo "### Image pushed"
+            echo ""
+            echo "- \`${{ steps.meta.outputs.image }}:${{ inputs.image_tag }}\`"
+            echo "- \`${{ steps.meta.outputs.image }}:${{ inputs.image_tag }}-${{ steps.meta.outputs.short_sha }}\`"
+            echo "- version arg: \`${{ inputs.version }}\`"
+            echo "- commit: \`${{ github.sha }}\`"
+          } >> "$GITHUB_STEP_SUMMARY"
