@@ -439,11 +439,10 @@ async function handleFileSelected(event: Event): Promise<void> {
 }
 
 function currentRollout(plugin: PluginInstallation): number {
-  return (
-    plugin.bindings.find(
-      (binding) => binding.capability === "openai.oauth.outbound_transport.v1",
-    )?.rollout_percent || 100
-  );
+  // 绑定可能只有 API Key（openai.apikey.outbound_transport.v1），不能只按
+  // OAuth 能力查找，否则会把已保存的灰度比例显示成 100。
+  const binding = plugin.bindings.find((item) => item.enabled) ?? plugin.bindings[0];
+  return binding?.rollout_percent || 100;
 }
 
 function hasEnabledBinding(plugin: PluginInstallation): boolean {

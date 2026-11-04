@@ -951,7 +951,7 @@ func (s *AccountTestService) testOpenAIAccountConnection(c *gin.Context, account
 		proxyURL = account.Proxy.URL()
 	}
 
-	resp, err := s.doOpenAIAccountTestUpstream(req, proxyURL, account, true)
+	resp, err := s.doOpenAIAccountTestUpstream(markOpenAIAPIKeyPluginStream(req, payloadBytes), proxyURL, account, true)
 	if err != nil {
 		return s.sendErrorAndEnd(c, fmt.Sprintf("Request failed: %s", err.Error()))
 	}
@@ -2292,7 +2292,7 @@ func (s *AccountTestService) testOpenAICompactConnection(c *gin.Context, account
 		proxyURL = account.Proxy.URL()
 	}
 
-	resp, err := s.doOpenAIAccountTestUpstream(req, proxyURL, account, true)
+	resp, err := s.doOpenAIAccountTestUpstream(markOpenAIAPIKeyPluginStream(req, payloadBytes), proxyURL, account, true)
 	if err != nil {
 		if s.accountRepo != nil {
 			updates := buildOpenAICompactProbeExtraUpdates(nil, nil, err, false, time.Now())

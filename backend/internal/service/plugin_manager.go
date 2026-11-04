@@ -21,6 +21,7 @@ import (
 	"time"
 
 	"github.com/Wei-Shaw/sub2api/internal/config"
+	"github.com/Wei-Shaw/sub2api/internal/util/urlvalidator"
 	pluginv1 "github.com/Wei-Shaw/sub2api/pkg/pluginapi/v1"
 )
 
@@ -33,13 +34,15 @@ const (
 )
 
 type pluginRoute struct {
-	pluginID       int64
-	runtime        *pluginRuntime
-	rolloutPercent int
-	unavailable    string
+	pluginID             int64
+	runtime              *pluginRuntime
+	rolloutPercent       int
+	apiKeyRolloutPercent int
+	unavailable          string
 }
 
-// PluginManager 管理插件安装、配置、进程生命周期和 OpenAI OAuth 能力绑定。
+// PluginManager 管理插件安装、配置、进程生命周期和 OpenAI 出站能力绑定
+// （OAuth 与 API Key 各自独立的绑定与灰度范围）。
 type PluginManager struct {
 	repo      PluginRepository
 	encryptor SecretEncryptor
@@ -271,7 +274,12 @@ func (m *PluginManager) reconcileOnce(ctx context.Context) error {
 	installations, err := m.repo.List(ctx)
 	if err != nil {
 		// 无法读取权威绑定状态时不能假设插件未启用，否则会把 OAuth 请求静默回落到旧直连路径。
-		m.publishUnavailableRoute(0, 100, "插件启用状态暂时无法读取")
+		// API Key 范围必须沿用最后一次显式绑定的值；不能因为数据库不可用就扩大到 100%。
+		apiKeyRollout := 0
+		if current := m.route.Load(); current != nil {
+			apiKeyRollout = current.apiKeyRolloutPercent
+		}
+		m.publishUnavailableRoute(0, 100, apiKeyRollout, "插件启用状态暂时无法读取")
 		return fmt.Errorf("读取插件启用状态: %w", err)
 	}
 	m.cleanupStaleLocalInstallations(installations)
@@ -281,8 +289,8 @@ func (m *PluginManager) reconcileOnce(ctx context.Context) error {
 			continue
 		}
 		if enabled != nil {
-			err := errors.New("检测到多个 OpenAI OAuth 出站插件同时启用")
-			m.publishUnavailableRoute(enabled.ID, 100, err.Error())
+			err := errors.New("检测到多个 OpenAI 出站插件同时启用")
+			m.publishUnavailableRoute(enabled.ID, max(bindingRollout(enabled.Bindings), bindingRollout(installation.Bindings)), max(apiKeyBindingRollout(enabled.Bindings), apiKeyBindingRollout(installation.Bindings)), err.Error())
 			return err
 		}
 		enabled = installation
@@ -307,9 +315,10 @@ func (m *PluginManager) reconcileOnce(ctx context.Context) error {
 	}
 
 	rollout := bindingRollout(enabled.Bindings)
+	apiKeyRollout := apiKeyBindingRollout(enabled.Bindings)
 	current := m.route.Load()
 	if current != nil && current.pluginID == enabled.ID && current.runtime != nil &&
-		!current.runtime.client.Exited() && current.rolloutPercent == rollout &&
+		!current.runtime.client.Exited() && current.rolloutPercent == rollout && current.apiKeyRolloutPercent == apiKeyRollout &&
 		current.runtime.installation.BinarySHA256 == enabled.BinarySHA256 &&
 		current.runtime.installation.ConfigEncrypted == enabled.ConfigEncrypted {
 		healthCtx, cancel := context.WithTimeout(ctx, pluginHealthTimeout)
@@ -328,19 +337,19 @@ func (m *PluginManager) reconcileOnce(ctx context.Context) error {
 	}
 	if enabled.State == PluginStateStarting && !m.startingStateExpired(enabled) {
 		if current == nil {
-			m.route.Store(&pluginRoute{pluginID: enabled.ID, rolloutPercent: rollout, unavailable: "插件正在其他实例中启动"})
+			m.route.Store(&pluginRoute{pluginID: enabled.ID, rolloutPercent: rollout, apiKeyRolloutPercent: apiKeyRollout, unavailable: "插件正在其他实例中启动"})
 		}
 		return nil
 	}
 
 	local, err := m.ensureLocalInstallation(ctx, enabled)
 	if err != nil {
-		m.publishUnavailableRoute(enabled.ID, rollout, err.Error())
+		m.publishUnavailableRoute(enabled.ID, rollout, apiKeyRollout, err.Error())
 		return err
 	}
 	runtime, err := m.prepareRuntime(ctx, local, true)
 	if err != nil {
-		m.publishUnavailableRoute(enabled.ID, rollout, err.Error())
+		m.publishUnavailableRoute(enabled.ID, rollout, apiKeyRollout, err.Error())
 		return err
 	}
 
@@ -351,7 +360,7 @@ func (m *PluginManager) reconcileOnce(ctx context.Context) error {
 		return err
 	}
 	if !hasEnabledOpenAIBinding(latest.Bindings) || latest.BinarySHA256 != enabled.BinarySHA256 ||
-		latest.ConfigEncrypted != enabled.ConfigEncrypted || bindingRollout(latest.Bindings) != rollout {
+		latest.ConfigEncrypted != enabled.ConfigEncrypted || bindingRollout(latest.Bindings) != rollout || apiKeyBindingRollout(latest.Bindings) != apiKeyRollout {
 		runtime.kill()
 		return nil
 	}
@@ -379,7 +388,7 @@ func (m *PluginManager) reconcileOnce(ctx context.Context) error {
 		}
 	}
 	m.runtimes[enabled.ID] = runtime
-	m.route.Store(&pluginRoute{pluginID: enabled.ID, runtime: runtime, rolloutPercent: rollout})
+	m.route.Store(&pluginRoute{pluginID: enabled.ID, runtime: runtime, rolloutPercent: rollout, apiKeyRolloutPercent: apiKeyRollout})
 	m.mu.Unlock()
 	for _, candidate := range stale {
 		candidate.drain(10 * time.Second)
@@ -415,7 +424,7 @@ func (m *PluginManager) detachAllRuntimes() []*pluginRuntime {
 	return runtimes
 }
 
-func (m *PluginManager) publishUnavailableRoute(pluginID int64, rollout int, message string) {
+func (m *PluginManager) publishUnavailableRoute(pluginID int64, rollout, apiKeyRollout int, message string) {
 	m.mu.Lock()
 	stale := make([]*pluginRuntime, 0, len(m.runtimes))
 	for id, runtime := range m.runtimes {
@@ -423,7 +432,7 @@ func (m *PluginManager) publishUnavailableRoute(pluginID int64, rollout int, mes
 		stale = append(stale, runtime)
 		delete(m.runtimes, id)
 	}
-	m.route.Store(&pluginRoute{pluginID: pluginID, rolloutPercent: rollout, unavailable: message})
+	m.route.Store(&pluginRoute{pluginID: pluginID, rolloutPercent: rollout, apiKeyRolloutPercent: apiKeyRollout, unavailable: message})
 	m.mu.Unlock()
 	for _, runtime := range stale {
 		runtime.drain(10 * time.Second)
@@ -603,7 +612,7 @@ func (m *PluginManager) Enable(ctx context.Context, id int64, acceptUntested boo
 		stateErr := m.repo.UpdateState(stateCtx, id, PluginStateError, err.Error(), nil, installation.BinarySHA256, PluginStateStarting)
 		cancel()
 		if hasEnabledOpenAIBinding(originalBindings) {
-			m.route.Store(&pluginRoute{pluginID: id, rolloutPercent: bindingRollout(originalBindings), unavailable: err.Error()})
+			m.route.Store(&pluginRoute{pluginID: id, rolloutPercent: bindingRollout(originalBindings), apiKeyRolloutPercent: apiKeyBindingRollout(originalBindings), unavailable: err.Error()})
 		}
 		return nil, errors.Join(err, stateErr)
 	}
@@ -944,26 +953,54 @@ func (m *PluginManager) ReadUIAsset(ctx context.Context, id int64, relative stri
 	return data, path, nil
 }
 
-func (m *PluginManager) RoundTripOpenAIOAuth(ctx context.Context, request *http.Request, proxyURL string, account *Account) (*http.Response, bool, error) {
-	if !m.ShouldRouteOpenAIOAuth(account) {
+// RoundTripOpenAIOutbound 按请求进入时的不可变路由快照分发，因此并发启用/停用
+// 不会在同一个请求中途切换到另一种绑定。
+func (m *PluginManager) RoundTripOpenAIOutbound(ctx context.Context, request *http.Request, proxyURL string, account *Account) (*http.Response, bool, error) {
+	if m == nil || account == nil || account.Platform != PlatformOpenAI {
 		return nil, false, nil
 	}
 	route := m.route.Load()
 	if route == nil {
 		return nil, false, nil
 	}
+	rollout := 0
+	switch account.Type {
+	case AccountTypeOAuth:
+		rollout = route.rolloutPercent
+	case AccountTypeAPIKey:
+		if !isOpenAIAPIKeyPluginStream(request) {
+			return nil, false, nil
+		}
+		rollout = route.apiKeyRolloutPercent
+	default:
+		return nil, false, nil
+	}
+	if rollout <= 0 || int(stablePluginBucket(account.ID)) >= rollout {
+		return nil, false, nil
+	}
+	// 插件自己持有 HTTP 客户端，所以交给出站凭据之前必须补上原生 API Key 路径
+	// 的最终解析 IP 校验。
+	if account.Type == AccountTypeAPIKey {
+		publicOnly := HTTPUpstreamPublicHostsOnly(request.Context()) ||
+			(m.cfg != nil && m.cfg.Security.URLAllowlist.Enabled && !m.cfg.Security.URLAllowlist.AllowPrivateHosts)
+		if publicOnly {
+			if err := urlvalidator.ValidateResolvedIP(request.URL.Hostname()); err != nil {
+				return nil, true, err
+			}
+		}
+	}
 	if route.runtime == nil {
-		return nil, true, fmt.Errorf("OpenAI OAuth 插件不可用: %s", route.unavailable)
+		return nil, true, fmt.Errorf("OpenAI 出站插件不可用: %s", route.unavailable)
 	}
 	if route.runtime.client.Exited() {
-		runtimeErr := errors.New("OpenAI OAuth 插件进程已退出")
+		runtimeErr := errors.New("OpenAI 出站插件进程已退出")
 		if stateErr := m.markRuntimeUnavailable(route, runtimeErr.Error()); stateErr != nil {
 			return nil, true, errors.Join(runtimeErr, stateErr)
 		}
 		return nil, true, runtimeErr
 	}
 	if !route.runtime.beginRequest() {
-		return nil, true, errors.New("OpenAI OAuth 插件正在停止")
+		return nil, true, errors.New("OpenAI 出站插件正在停止")
 	}
 	response, err := route.runtime.roundTrip(ctx, request, proxyURL, account)
 	if err != nil {
@@ -976,6 +1013,15 @@ func (m *PluginManager) RoundTripOpenAIOAuth(ctx context.Context, request *http.
 		return nil, true, err
 	}
 	return response, true, nil
+}
+
+// RoundTripOpenAIOAuth 保留给既有 OAuth 调用方（含原生 WebSocket 选路），
+// 作用范围仍然是 OAuth 账号。
+func (m *PluginManager) RoundTripOpenAIOAuth(ctx context.Context, request *http.Request, proxyURL string, account *Account) (*http.Response, bool, error) {
+	if account == nil || account.Type != AccountTypeOAuth {
+		return nil, false, nil
+	}
+	return m.RoundTripOpenAIOutbound(ctx, request, proxyURL, account)
 }
 
 // ShouldRouteOpenAIOAuth 判断该账号是否命中当前 OpenAI OAuth 插件绑定。
@@ -1000,9 +1046,10 @@ func (m *PluginManager) markRuntimeUnavailable(failedRoute *pluginRoute, message
 	}
 	delete(m.runtimes, failedRoute.pluginID)
 	m.route.Store(&pluginRoute{
-		pluginID:       failedRoute.pluginID,
-		rolloutPercent: failedRoute.rolloutPercent,
-		unavailable:    message,
+		pluginID:             failedRoute.pluginID,
+		rolloutPercent:       failedRoute.rolloutPercent,
+		apiKeyRolloutPercent: failedRoute.apiKeyRolloutPercent,
+		unavailable:          message,
 	})
 	m.mu.Unlock()
 	return nil
@@ -1032,9 +1079,10 @@ func (m *PluginManager) publishRuntimeLocked(installation *PluginInstallation, r
 	}
 	m.runtimes[installation.ID] = runtime
 	m.route.Store(&pluginRoute{
-		pluginID:       installation.ID,
-		runtime:        runtime,
-		rolloutPercent: bindingRollout(installation.Bindings),
+		pluginID:             installation.ID,
+		runtime:              runtime,
+		rolloutPercent:       bindingRollout(installation.Bindings),
+		apiKeyRolloutPercent: apiKeyBindingRollout(installation.Bindings),
 	})
 }
 
@@ -1138,22 +1186,27 @@ func (m *PluginManager) removeManagedPath(target string) error {
 }
 
 func hasEnabledOpenAIBinding(bindings []PluginBinding) bool {
-	for _, binding := range bindings {
-		if binding.Enabled && binding.Capability == PluginCapabilityOpenAIOAuthOutbound &&
-			binding.Platform == PlatformOpenAI && binding.AccountType == AccountTypeOAuth {
-			return true
-		}
-	}
-	return false
+	return bindingRollout(bindings) > 0 || apiKeyBindingRollout(bindings) > 0
 }
 
 func bindingRollout(bindings []PluginBinding) int {
+	return scopedBindingRollout(bindings, PluginCapabilityOpenAIOAuthOutbound, AccountTypeOAuth)
+}
+
+func apiKeyBindingRollout(bindings []PluginBinding) int {
+	return scopedBindingRollout(bindings, PluginCapabilityOpenAIAPIKeyOutbound, AccountTypeAPIKey)
+}
+
+// scopedBindingRollout 只认「已启用、能力、平台、账号类型」四者匹配的绑定；
+// 缺省返回 0（不路由），避免缺少某类绑定时被误当成 100% 灰度。
+func scopedBindingRollout(bindings []PluginBinding, capability, accountType string) int {
 	for _, binding := range bindings {
-		if binding.Capability == PluginCapabilityOpenAIOAuthOutbound {
+		if binding.Enabled && binding.Capability == capability && binding.Platform == PlatformOpenAI &&
+			binding.AccountType == accountType && binding.RolloutPercent >= 1 && binding.RolloutPercent <= 100 {
 			return binding.RolloutPercent
 		}
 	}
-	return 100
+	return 0
 }
 
 func stablePluginBucket(accountID int64) uint64 {

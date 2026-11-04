@@ -744,7 +744,7 @@ func (s *OpenAIGatewayService) buildUpstreamRequestOpenAIPassthrough(
 	if err := applyMappedGPT55LiteCompatibility(req, account, body); err != nil {
 		return nil, err
 	}
-	return req, nil
+	return markOpenAIAPIKeyPluginStreamFromGin(c, req, body), nil
 }
 
 func stripOpenAILegacyResponsesBeta(headers http.Header) {
