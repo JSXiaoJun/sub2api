@@ -38,7 +38,7 @@ func installAPIKeyPlugin(t *testing.T, pkg, keyID, pub string) *PluginInstallati
 	t.Helper()
 	cfg := testPluginConfig(t.TempDir(), false)
 	cfg.Plugins.TrustedPublishers = map[string]string{keyID: pub}
-	installer := NewPluginPackageInstaller(cfg, PluginHostInfo{Version: "0.2.19", BuildType: "source"})
+	installer := NewPluginPackageInstaller(cfg, PluginHostInfo{Version: "0.2.20", BuildType: "source"})
 	file, err := os.Open(pkg)
 	require.NoError(t, err)
 	defer func() { _ = file.Close() }()
@@ -51,7 +51,7 @@ func installAPIKeyPlugin(t *testing.T, pkg, keyID, pub string) *PluginInstallati
 	require.Equal(t, PluginCapabilityOpenAIAPIKeyOutbound, installation.Manifest.Capabilities[0].ID)
 	require.Equal(t, AccountTypeAPIKey, installation.Manifest.Capabilities[0].AccountType)
 	require.Equal(t, PlatformOpenAI, installation.Manifest.Capabilities[0].Platform)
-	compatibility := EvaluatePluginCompatibility(installation.Manifest, PluginHostInfo{Version: "0.2.19"})
+	compatibility := EvaluatePluginCompatibility(installation.Manifest, PluginHostInfo{Version: "0.2.20"})
 	require.True(t, compatibility.Compatible, compatibility.Message)
 	require.True(t, compatibility.Tested, compatibility.Message)
 	return installation
