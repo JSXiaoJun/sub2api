@@ -1,14 +1,14 @@
 # OpenAI API Key 出站插件（首个事件计时）：站点适配与维护
 
 本文记录把 AM1 的 `inventory.openai.stream-timing`（0.1.4-am1.1）API Key 适配包接入本仓库
-Sub2API 0.2.19 的改动、部署方式、验证结果、已知限制和回退步骤。
+Sub2API 0.2.20 的改动、部署方式、验证结果、已知限制和回退步骤。
 
 ## 1. 适用对象
 
 | 项目 | 值 |
 | --- | --- |
-| 宿主基线 | Sub2API `0.2.19`（`backend/cmd/server/VERSION`，提交 `4a4a83ee5` 起） |
-| 宿主改造分支 | `feat/plugin-openai-apikey-outbound` |
+| 宿主基线 | Sub2API `0.2.20`（`backend/cmd/server/VERSION`；由 0.2.19 + 上游 0.2.20 修复合并而来） |
+| 宿主改造分支 | `feat/plugin-apikey-0.2.20`（旧分支 `feat/plugin-openai-apikey-outbound` 为 0.2.19 基线） |
 | 插件 ID / 版本 | `inventory.openai.stream-timing` / `0.1.4-am1.1`（派生 API Key-only 包） |
 | 能力 | `openai.apikey.outbound_transport.v1`，平台 `openai`，账号类型 `apikey` |
 | 账号范围 | **仅 OpenAI → API Key 上游账号**；OAuth 账号不使用此绑定 |
@@ -49,7 +49,7 @@ Sub2API 会把部分接口转换为 `/responses` 流式请求（Chat Completions
 
 ### 3.1 先决条件
 
-- 宿主必须是包含本分支改动的构建（未改动的 0.2.19 只支持 OAuth 能力，上传候选包会显示
+- 宿主必须是包含本分支改动的构建（未改动的 0.2.20 只支持 OAuth 能力，上传候选包会显示
   「不支持的出站能力」）。这一步需要重新构建并重启主应用。
 - 以 Docker 部署为例：数据卷 `sub2api_data` 挂载到 `/app/data`，配置为
   `/app/data/config.yaml`，插件目录默认 `/app/data/plugins`。
@@ -71,7 +71,7 @@ plugins:
 ### 3.3 上传
 
 1. 管理员登录 `/admin/plugins`，上传
-   `stream-timing-0.1.4-am1.1-apikey-0.2.19.s2plugin`（不是外层 ZIP）。
+   `stream-timing-0.1.4-am1.1-apikey-0.2.20.s2plugin`（不是外层 ZIP）。
 2. 确认：签名「已验证」、兼容「当前版本已测试」、状态「已停用」、只有一条
    API Key 绑定且为关闭。
 3. 保存配置 `{"mode":"off"}`，执行「测试」（本地配置校验，不访问上游）。
