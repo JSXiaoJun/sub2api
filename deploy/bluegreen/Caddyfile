@@ -1,0 +1,98 @@
+# =============================================================================
+# Sub2API blue-green edge proxy (Caddy)
+# =============================================================================
+# Public traffic enters here and is forwarded to exactly one slot:
+#   sub2api-blue:8080   or   sub2api-green:8080
+#
+# The active order lives in .runtime/upstream.caddy and is rewritten by
+# ./bluegreen.sh before a `caddy reload`. `lb_policy first` makes Caddy always
+# prefer the first healthy upstream, so the order of that file IS the active
+# slot; the second upstream is the automatic failover target.
+#
+# TLS is intentionally not terminated here: this container takes over the same
+# host port your single-container deployment used (default 8080). If you have a
+# TLS terminator in front, point it at this port, unchanged.
+# =============================================================================
+
+{
+	admin localhost:2019
+	auto_https off
+}
+
+:8080 {
+	# -------------------------------------------------------------------------
+	# Compression
+	# -------------------------------------------------------------------------
+	# text/event-stream must never be compressed or buffered, otherwise SSE
+	# responses arrive in bursts instead of being streamed.
+	encode {
+		zstd
+		gzip 6
+		minimum_length 256
+		match {
+			header Content-Type text/css*
+			header Content-Type text/csv*
+			header Content-Type text/html*
+			header Content-Type text/javascript*
+			header Content-Type text/markdown*
+			header Content-Type text/plain*
+			header Content-Type text/xml*
+			header Content-Type application/json*
+			header Content-Type application/javascript*
+			header Content-Type application/xml*
+			header Content-Type application/rss+xml*
+			header Content-Type image/svg+xml*
+		}
+	}
+
+	# -------------------------------------------------------------------------
+	# Request size limit (matches GATEWAY_MAX_BODY_SIZE default)
+	# -------------------------------------------------------------------------
+	request_body {
+		max_size 256MB
+	}
+
+	# -------------------------------------------------------------------------
+	# Slot routing
+	# -------------------------------------------------------------------------
+	reverse_proxy {
+		# Rewritten by bluegreen.sh: "to sub2api-<active>:8080 sub2api-<other>:8080"
+		import /etc/caddy/runtime/upstream.caddy
+
+		# Our clients are either the public internet (untrusted) or a private
+		# reverse proxy / CDN in RFC1918 space. Trusting private ranges keeps
+		# their X-Forwarded-* headers; requests from public clients always get
+		# them rewritten, so header spoofing stays blocked.
+		trusted_proxies private_ranges
+
+		# Primary/secondary failover: first healthy upstream wins.
+		lb_policy first
+		lb_try_duration 10s
+		lb_try_interval 250ms
+
+		# Active health checks. /health answers as soon as the app is ready
+		# (the HTTP listener starts after migrations finish).
+		health_uri /health
+		health_interval 10s
+		health_timeout 5s
+		health_status 200
+		health_fails 2
+		health_passes 1
+
+		# Passive health checks catch a backend that failed after the switch.
+		fail_duration 30s
+		max_fails 3
+
+		# A `caddy reload` closes WebSocket tunnels of the old config by default.
+		# Keep them alive for a few minutes so a cutover does not drop connected
+		# clients; long SSE responses are unaffected and always drain normally.
+		stream_close_delay 5m
+
+		transport http {
+			keepalive 120s
+			# Do not ask the app to gzip: SSE and large JSON bodies are cheaper
+			# to move uncompressed here and the app manages its own encodings.
+			compression off
+		}
+	}
+}
