@@ -123,6 +123,7 @@ export type { TLSFingerprintProfile, CreateProfileRequest, UpdateProfileRequest 
 export type { ContentModerationConfig, ContentModerationLog, ModerationMode } from './riskControl'
 export type {
   PluginInstallation,
+  PluginBinding,
   PluginCompatibility,
   PluginUISession,
   PluginTestResult

@@ -12,6 +12,7 @@ Sub2API 0.2.21 的改动、部署方式、验证结果、已知限制和回退�
 | 插件 ID / 版本 | `inventory.openai.stream-timing` / `0.1.4-am1.1`（派生 API Key-only 包） |
 | 能力 | `openai.apikey.outbound_transport.v1`，平台 `openai`，账号类型 `apikey` |
 | 账号范围 | **仅 OpenAI → API Key 上游账号**；OAuth 账号不使用此绑定 |
+| 账号分组范围 | 可配置为全部分组，或只对选中账号分组下的 API Key 账号生效；按**被调度账号所属账号分组**判断，不按请求所属订阅分组 |
 | 接口范围 | 原生 `POST /v1/responses` 且真实请求体 `stream:true` |
 | 管理入口 | 后台 `/admin/plugins`（API：`/api/v1/admin/plugins`） |
 | 默认状态 | 安装后 `disabled`，配置 `{"mode":"off"}` |
@@ -39,6 +40,11 @@ Sub2API 会把部分接口转换为 `/responses` 流式请求（Chat Completions
 5. `account_test_service.go`：OpenAI Responses 账号测试与真实转发走同一插件路径。
 6. 前端 `PluginsView.vue` + 中英文案：灰度显示不再只按 OAuth 绑定取值，文案改为
    OAuth/API Key 两类绑定。
+7. 账号分组范围：迁移 `251_plugin_binding_group_scope.sql` 为
+   `sub2api_plugin_bindings` 增加 `all_groups` / `group_ids`；`plugin_manager.go`
+   在路由快照中携带分组范围，`RoundTripOpenAIOutbound` / `ShouldRouteOpenAIOAuth`
+   在灰度命中后再按账号分组过滤；`PUT /admin/plugins/{id}/scope` 支持在线调整，
+   不重启插件进程。
 
 与 AM1 参考补丁 `host-reference/host-apikey-AM1-reference.patch` 的差异只有一处：
 参考补丁在请求构造器无条件打标，因而 Chat Completions→Responses 桥接也会进入插件；本实现
@@ -85,6 +91,30 @@ API Key 绑定；仍然要在启用后读回确认 OAuth 绑定不存在、API K
   请求随机放行 30 个」。
 - 建议顺序：`mode=off` 全量绑定 → 低比例账号 `mode=hint` → 观察账单与错误率 → 再调整。
 
+### 3.5 按账号分组收窄（可选，推荐）
+
+插件页每个插件卡片提供「生效账号分组」：
+
+- **全部分组**（默认）：保持旧行为，所有匹配的 OpenAI API Key 账号都按灰度命中。
+- **指定分组**：只对绑定到选中账号分组的账号启用；未选中分组下的账号直接走宿主原生路径。
+  选中列表为空时拒绝启用/保存，必须显式选择分组或切回全部分组。
+
+判定依据是**被调度账号所属的账号分组**（`accounts` ↔ `groups`），不是请求所属的订阅分组。
+因此同一个账号如果同时服务多个订阅分组，只要它属于选中账号分组，经过该账号的请求都会走插件。
+如果希望按订阅分组隔离，请把目标账号单独绑定到一个专用账号分组，再只选中该分组。
+
+启用后调整分组或灰度不需要重启插件进程，也不需要先停用：
+
+```http
+PUT /api/v1/admin/plugins/{id}/scope
+Content-Type: application/json
+
+{"rollout_percent":100,"all_groups":false,"group_ids":[12,18]}
+```
+
+该接口与启用/停用一样受管理员二次验证保护。数据库是跨实例权威状态，其他实例会在
+约 1 秒内通过 reconcile 应用新范围；已进入的请求继续使用进入时的路由快照。
+
 ## 4. 配置
 
 | 字段 | 含义 |
@@ -97,13 +127,18 @@ API Key 绑定；仍然要在启用后读回确认 OAuth 绑定不存在、API K
 
 插件配置由插件自身校验并规范化，宿主保存密文。
 
+注意：`mode` 等字段属于插件自身配置；「生效账号分组」属于宿主绑定
+（`sub2api_plugin_bindings.all_groups` / `group_ids`），不会传给插件进程，也不会被
+插件配置校验覆盖。
+
 ## 5. 验证（隔离环境，未接真实流量）
 
 命令与结果见交付目录 `verification/验证报告.md`。摘要：
 
 - 宿主 `go build ./...`、`go vet`、`go test ./internal/service` 全量通过。
-- 新增 12 个测试：路由边界、私有标记不可伪造、公网 IP 限制、真实进程流、`mode=off`
-  逐字节透传、非流式、错误、取消、重试、数据库不可读时范围不变。
+- 新增测试覆盖：路由边界、私有标记不可伪造、公网 IP 限制、真实进程流、`mode=off`
+  逐字节透传、非流式、错误、取消、重试、数据库不可读时范围不变，以及账号分组范围的
+  规范化、旧数据默认全部分组、账号命中/跳过与在线更新。
 - 真实插件进程 + 本地模拟上游：提示平均在 ~100ms 到达，真实首 token 在 ~400ms；提示为
   `event: sub2api.timing` 空 delta，真实文本和完成事件 `usage` 原样保留。
 - 取消在 3 秒内传递到上游。
@@ -123,6 +158,9 @@ API Key 绑定；仍然要在启用后读回确认 OAuth 绑定不存在、API K
    路径必须「停用插件」。
 6. 停用会排空最多约 10 秒，超时长请求可能被断开；已进入的请求继续使用进入时的配置。
 7. 插件只支持 Linux amd64 / Windows amd64 二进制；其他架构需要自行重编译。
+8. 「指定分组」按被调度账号所属账号分组过滤；账号未绑定任何分组，或绑定分组都不在选中
+   列表时，该账号的请求不会走插件。新增账号后如果忘记绑定目标分组，会表现为插件对该账号
+   不生效，但不会报错。
 
 ## 7. 回退
 
@@ -155,6 +193,8 @@ go run tools/verify-package.go <pkg>.s2plugin <pub>.public
 
 - 版本号保持 `0.1.4-am1.1`（插件进程 `GetInfo` 上报该版本，清单必须一致）；派生包用
   SHA256 区分。
+- 同 ID 插件升级会保留已配置的账号分组范围（`all_groups` / `group_ids`），但灰度比例
+  重置为 100；升级后需要重新启用并确认范围。
 - 若将来升级宿主版本：先改 `requires.sub2api` 与 `tested_sub2api_versions`，重新签名，
   在隔离环境重跑第 5 节全部用例，再部署。
 - 不要为通过兼容检查而伪造 `VERSION`、关闭签名校验或跳过登录/二次验证。
@@ -167,6 +207,9 @@ SUB2API_TEST_APIKEY_PLUGIN_PACKAGE=<pkg> \
 SUB2API_TEST_APIKEY_PLUGIN_KEY_ID=sub2api-apikey-stream-timing-20261104 \
 SUB2API_TEST_APIKEY_PLUGIN_PUBLIC_KEY=<base64> \
 go test ./internal/service -run TestAPIKeyPlugin -count=1
+
+# 账号分组范围（规范化、旧数据默认全部分组、路由命中/跳过）
+go test ./internal/service -run 'TestPluginGroupScope|TestBindingGroupScope|TestPluginScopeUpdate' -count=1
 
 # 与宿主无关的插件自身回归（原始 OAuth 夹具）
 cd source && go test ./internal/timing -count=1

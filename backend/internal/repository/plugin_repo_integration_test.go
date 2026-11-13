@@ -33,9 +33,15 @@ func TestPluginRepositoryLifecycleIsAtomicAndOptimistic(t *testing.T) {
 		Capability: service.PluginCapabilityOpenAIOAuthOutbound,
 		Platform:   service.PlatformOpenAI, AccountType: service.AccountTypeOAuth,
 		RolloutPercent: 100,
+		AllGroups:      false,
+		GroupIDs:       []int64{9, 4, 9},
 	}}
 	installed, err := repo.Install(ctx, first, bindings)
 	require.NoError(t, err)
+	require.Len(t, installed.Bindings, 1)
+	require.False(t, installed.Bindings[0].AllGroups)
+	require.Equal(t, []int64{9, 4, 9}, installed.Bindings[0].GroupIDs,
+		"repository must preserve the configured account-group scope")
 	artifact, err := repo.GetArtifact(ctx, installed.ID)
 	require.NoError(t, err)
 	require.Equal(t, first.ArtifactData, artifact)

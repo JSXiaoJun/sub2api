@@ -116,15 +116,19 @@ type PluginInstallation struct {
 }
 
 type PluginBinding struct {
-	ID             int64     `json:"id"`
-	PluginID       int64     `json:"plugin_id"`
-	Capability     string    `json:"capability"`
-	Platform       string    `json:"platform"`
-	AccountType    string    `json:"account_type"`
-	Enabled        bool      `json:"enabled"`
-	RolloutPercent int       `json:"rollout_percent"`
-	CreatedAt      time.Time `json:"created_at"`
-	UpdatedAt      time.Time `json:"updated_at"`
+	ID             int64  `json:"id"`
+	PluginID       int64  `json:"plugin_id"`
+	Capability     string `json:"capability"`
+	Platform       string `json:"platform"`
+	AccountType    string `json:"account_type"`
+	Enabled        bool   `json:"enabled"`
+	RolloutPercent int    `json:"rollout_percent"`
+	// AllGroups 为 true 时对所有匹配账号生效；false 时只对 GroupIDs 中的账号分组生效。
+	// 分组按「被调度账号所属分组」判断，而不是请求所属的订阅分组。
+	AllGroups bool      `json:"all_groups"`
+	GroupIDs  []int64   `json:"group_ids"`
+	CreatedAt time.Time `json:"created_at"`
+	UpdatedAt time.Time `json:"updated_at"`
 }
 
 type PluginRepository interface {

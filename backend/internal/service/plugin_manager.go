@@ -38,6 +38,7 @@ type pluginRoute struct {
 	runtime              *pluginRuntime
 	rolloutPercent       int
 	apiKeyRolloutPercent int
+	groupScope           pluginGroupScope
 	unavailable          string
 }
 
@@ -203,13 +204,24 @@ func (m *PluginManager) Install(ctx context.Context, reader io.Reader, installed
 	}
 	bindings := make([]PluginBinding, 0, len(packageInfo.Manifest.Capabilities))
 	for _, capability := range packageInfo.Manifest.SortedCapabilities() {
-		bindings = append(bindings, PluginBinding{
+		binding := PluginBinding{
 			Capability:     capability.ID,
 			Platform:       capability.Platform,
 			AccountType:    capability.AccountType,
 			Enabled:        false,
 			RolloutPercent: 100,
-		})
+			AllGroups:      true,
+			GroupIDs:       []int64{},
+		}
+		// 升级同 ID 插件时保留已配置的账号分组范围，避免静默扩大到全部分组。
+		// 灰度比例仍重置为 100，启用后由管理员重新决定。
+		if previous != nil {
+			if old := findPluginBinding(previous.Bindings, capability); old != nil && !old.AllGroups {
+				binding.AllGroups = false
+				binding.GroupIDs = append([]int64(nil), old.GroupIDs...)
+			}
+		}
+		bindings = append(bindings, binding)
 	}
 	installed, err := m.repo.Install(ctx, packageInfo, bindings)
 	if err != nil {
@@ -276,10 +288,13 @@ func (m *PluginManager) reconcileOnce(ctx context.Context) error {
 		// 无法读取权威绑定状态时不能假设插件未启用，否则会把 OAuth 请求静默回落到旧直连路径。
 		// API Key 范围必须沿用最后一次显式绑定的值；不能因为数据库不可用就扩大到 100%。
 		apiKeyRollout := 0
+		scope := pluginGroupScope{}
 		if current := m.route.Load(); current != nil {
 			apiKeyRollout = current.apiKeyRolloutPercent
+			// 数据库不可读时沿用最后一次显式分组范围，不能扩大到全部分组。
+			scope = current.groupScope
 		}
-		m.publishUnavailableRoute(0, 100, apiKeyRollout, "插件启用状态暂时无法读取")
+		m.publishUnavailableRoute(0, 100, apiKeyRollout, scope, "插件启用状态暂时无法读取")
 		return fmt.Errorf("读取插件启用状态: %w", err)
 	}
 	m.cleanupStaleLocalInstallations(installations)
@@ -290,7 +305,13 @@ func (m *PluginManager) reconcileOnce(ctx context.Context) error {
 		}
 		if enabled != nil {
 			err := errors.New("检测到多个 OpenAI 出站插件同时启用")
-			m.publishUnavailableRoute(enabled.ID, max(bindingRollout(enabled.Bindings), bindingRollout(installation.Bindings)), max(apiKeyBindingRollout(enabled.Bindings), apiKeyBindingRollout(installation.Bindings)), err.Error())
+			m.publishUnavailableRoute(
+				enabled.ID,
+				max(bindingRollout(enabled.Bindings), bindingRollout(installation.Bindings)),
+				max(apiKeyBindingRollout(enabled.Bindings), apiKeyBindingRollout(installation.Bindings)),
+				bindingGroupScope(enabled.Bindings),
+				err.Error(),
+			)
 			return err
 		}
 		enabled = installation
@@ -316,11 +337,20 @@ func (m *PluginManager) reconcileOnce(ctx context.Context) error {
 
 	rollout := bindingRollout(enabled.Bindings)
 	apiKeyRollout := apiKeyBindingRollout(enabled.Bindings)
+	scope := bindingGroupScope(enabled.Bindings)
 	current := m.route.Load()
 	if current != nil && current.pluginID == enabled.ID && current.runtime != nil &&
-		!current.runtime.client.Exited() && current.rolloutPercent == rollout && current.apiKeyRolloutPercent == apiKeyRollout &&
+		!current.runtime.client.Exited() &&
 		current.runtime.installation.BinarySHA256 == enabled.BinarySHA256 &&
 		current.runtime.installation.ConfigEncrypted == enabled.ConfigEncrypted {
+		// 灰度与账号分组范围可以在线调整，不需要重启插件进程。
+		if current.rolloutPercent != rollout || current.apiKeyRolloutPercent != apiKeyRollout || !current.groupScope.Equal(scope) {
+			current = m.updateRouteBindings(current, rollout, apiKeyRollout, scope)
+		}
+		if current == nil || current.runtime == nil {
+			// 路由已被请求侧标记为不可用；交给下一轮 reconcile 重新启动。
+			return nil
+		}
 		healthCtx, cancel := context.WithTimeout(ctx, pluginHealthTimeout)
 		healthErr := current.runtime.checkHealth(healthCtx)
 		cancel()
@@ -337,19 +367,19 @@ func (m *PluginManager) reconcileOnce(ctx context.Context) error {
 	}
 	if enabled.State == PluginStateStarting && !m.startingStateExpired(enabled) {
 		if current == nil {
-			m.route.Store(&pluginRoute{pluginID: enabled.ID, rolloutPercent: rollout, apiKeyRolloutPercent: apiKeyRollout, unavailable: "插件正在其他实例中启动"})
+			m.route.Store(&pluginRoute{pluginID: enabled.ID, rolloutPercent: rollout, apiKeyRolloutPercent: apiKeyRollout, groupScope: scope, unavailable: "插件正在其他实例中启动"})
 		}
 		return nil
 	}
 
 	local, err := m.ensureLocalInstallation(ctx, enabled)
 	if err != nil {
-		m.publishUnavailableRoute(enabled.ID, rollout, apiKeyRollout, err.Error())
+		m.publishUnavailableRoute(enabled.ID, rollout, apiKeyRollout, scope, err.Error())
 		return err
 	}
 	runtime, err := m.prepareRuntime(ctx, local, true)
 	if err != nil {
-		m.publishUnavailableRoute(enabled.ID, rollout, apiKeyRollout, err.Error())
+		m.publishUnavailableRoute(enabled.ID, rollout, apiKeyRollout, scope, err.Error())
 		return err
 	}
 
@@ -360,7 +390,8 @@ func (m *PluginManager) reconcileOnce(ctx context.Context) error {
 		return err
 	}
 	if !hasEnabledOpenAIBinding(latest.Bindings) || latest.BinarySHA256 != enabled.BinarySHA256 ||
-		latest.ConfigEncrypted != enabled.ConfigEncrypted || bindingRollout(latest.Bindings) != rollout || apiKeyBindingRollout(latest.Bindings) != apiKeyRollout {
+		latest.ConfigEncrypted != enabled.ConfigEncrypted || bindingRollout(latest.Bindings) != rollout ||
+		apiKeyBindingRollout(latest.Bindings) != apiKeyRollout || !bindingGroupScope(latest.Bindings).Equal(scope) {
 		runtime.kill()
 		return nil
 	}
@@ -388,7 +419,7 @@ func (m *PluginManager) reconcileOnce(ctx context.Context) error {
 		}
 	}
 	m.runtimes[enabled.ID] = runtime
-	m.route.Store(&pluginRoute{pluginID: enabled.ID, runtime: runtime, rolloutPercent: rollout, apiKeyRolloutPercent: apiKeyRollout})
+	m.route.Store(&pluginRoute{pluginID: enabled.ID, runtime: runtime, rolloutPercent: rollout, apiKeyRolloutPercent: apiKeyRollout, groupScope: scope})
 	m.mu.Unlock()
 	for _, candidate := range stale {
 		candidate.drain(10 * time.Second)
@@ -424,7 +455,7 @@ func (m *PluginManager) detachAllRuntimes() []*pluginRuntime {
 	return runtimes
 }
 
-func (m *PluginManager) publishUnavailableRoute(pluginID int64, rollout, apiKeyRollout int, message string) {
+func (m *PluginManager) publishUnavailableRoute(pluginID int64, rollout, apiKeyRollout int, scope pluginGroupScope, message string) {
 	m.mu.Lock()
 	stale := make([]*pluginRuntime, 0, len(m.runtimes))
 	for id, runtime := range m.runtimes {
@@ -432,11 +463,28 @@ func (m *PluginManager) publishUnavailableRoute(pluginID int64, rollout, apiKeyR
 		stale = append(stale, runtime)
 		delete(m.runtimes, id)
 	}
-	m.route.Store(&pluginRoute{pluginID: pluginID, rolloutPercent: rollout, apiKeyRolloutPercent: apiKeyRollout, unavailable: message})
+	m.route.Store(&pluginRoute{pluginID: pluginID, rolloutPercent: rollout, apiKeyRolloutPercent: apiKeyRollout, groupScope: scope, unavailable: message})
 	m.mu.Unlock()
 	for _, runtime := range stale {
 		runtime.drain(10 * time.Second)
 	}
+}
+
+// updateRouteBindings 在插件进程不重启的前提下刷新灰度比例与账号分组范围。
+// 返回发布后的快照；如果当前路由已被其他路径替换，则返回替换后的快照。
+func (m *PluginManager) updateRouteBindings(route *pluginRoute, rollout, apiKeyRollout int, scope pluginGroupScope) *pluginRoute {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	current := m.route.Load()
+	if current != route {
+		return current
+	}
+	updated := *current
+	updated.rolloutPercent = rollout
+	updated.apiKeyRolloutPercent = apiKeyRollout
+	updated.groupScope = scope
+	m.route.Store(&updated)
+	return &updated
 }
 
 func (m *PluginManager) ensureLocalInstallation(ctx context.Context, installation *PluginInstallation) (*PluginInstallation, error) {
@@ -563,11 +611,15 @@ func verifyLocalPluginBinary(installation *PluginInstallation, root string) erro
 	return nil
 }
 
-func (m *PluginManager) Enable(ctx context.Context, id int64, acceptUntested bool, rolloutPercent int) (*PluginInstallation, error) {
+func (m *PluginManager) Enable(ctx context.Context, id int64, acceptUntested bool, rolloutPercent int, allGroups bool, groupIDs []int64) (*PluginInstallation, error) {
 	m.operationMu.Lock()
 	defer m.operationMu.Unlock()
 	if rolloutPercent < 1 || rolloutPercent > 100 {
 		return nil, errors.New("灰度比例必须在 1 到 100 之间")
+	}
+	scope, err := newPluginGroupScope(allGroups, groupIDs)
+	if err != nil {
+		return nil, err
 	}
 	installation, err := m.repo.GetByID(ctx, id)
 	if err != nil {
@@ -583,7 +635,12 @@ func (m *PluginManager) Enable(ctx context.Context, id int64, acceptUntested boo
 		m.mu.Unlock()
 		installation.RuntimeHealthy = runtime != nil && !runtime.client.Exited()
 		if installation.RuntimeHealthy {
-			return installation, nil
+			if bindingsHaveRollout(installation.Bindings, rolloutPercent) &&
+				bindingGroupScope(installation.Bindings).Equal(scope) {
+				return installation, nil
+			}
+			// 已启用插件只调整灰度/分组范围时不必重启进程。
+			return m.applyScopeLocked(ctx, installation, rolloutPercent, scope)
 		}
 	}
 	compatibility := EvaluatePluginCompatibility(installation.Manifest, m.hostInfo)
@@ -603,6 +660,7 @@ func (m *PluginManager) Enable(ctx context.Context, id int64, acceptUntested boo
 		installation.Bindings[index].Enabled = true
 		installation.Bindings[index].RolloutPercent = rolloutPercent
 	}
+	applyPluginGroupScope(installation.Bindings, scope)
 	if err := m.repo.BeginEnable(ctx, id, installation.BinarySHA256, installation.State); err != nil {
 		return nil, err
 	}
@@ -612,7 +670,13 @@ func (m *PluginManager) Enable(ctx context.Context, id int64, acceptUntested boo
 		stateErr := m.repo.UpdateState(stateCtx, id, PluginStateError, err.Error(), nil, installation.BinarySHA256, PluginStateStarting)
 		cancel()
 		if hasEnabledOpenAIBinding(originalBindings) {
-			m.route.Store(&pluginRoute{pluginID: id, rolloutPercent: bindingRollout(originalBindings), apiKeyRolloutPercent: apiKeyBindingRollout(originalBindings), unavailable: err.Error()})
+			m.route.Store(&pluginRoute{
+				pluginID:             id,
+				rolloutPercent:       bindingRollout(originalBindings),
+				apiKeyRolloutPercent: apiKeyBindingRollout(originalBindings),
+				groupScope:           bindingGroupScope(originalBindings),
+				unavailable:          err.Error(),
+			})
 		}
 		return nil, errors.Join(err, stateErr)
 	}
@@ -638,6 +702,54 @@ func (m *PluginManager) Enable(ctx context.Context, id int64, acceptUntested boo
 	result.RuntimeHealthy = true
 	result.RuntimeMessage = "插件进程运行中"
 	return result, nil
+}
+
+// UpdateScope 在插件保持启用的情况下更新灰度比例与账号分组范围，不重启插件进程。
+// 分组范围按被调度账号所属的账号分组判断；选中分组为空时拒绝，必须显式改为全部分组。
+func (m *PluginManager) UpdateScope(ctx context.Context, id int64, rolloutPercent int, allGroups bool, groupIDs []int64) (*PluginInstallation, error) {
+	m.operationMu.Lock()
+	defer m.operationMu.Unlock()
+	if rolloutPercent < 1 || rolloutPercent > 100 {
+		return nil, errors.New("灰度比例必须在 1 到 100 之间")
+	}
+	scope, err := newPluginGroupScope(allGroups, groupIDs)
+	if err != nil {
+		return nil, err
+	}
+	installation, err := m.repo.GetByID(ctx, id)
+	if err != nil {
+		return nil, err
+	}
+	if !hasEnabledOpenAIBinding(installation.Bindings) {
+		return nil, errors.New("请先启用插件，再调整生效范围")
+	}
+	return m.applyScopeLocked(ctx, installation, rolloutPercent, scope)
+}
+
+// applyScopeLocked 要求调用方已持有 operationMu。
+func (m *PluginManager) applyScopeLocked(ctx context.Context, installation *PluginInstallation, rolloutPercent int, scope pluginGroupScope) (*PluginInstallation, error) {
+	if installation == nil {
+		return nil, errors.New("插件安装记录为空")
+	}
+	bindings := append([]PluginBinding(nil), installation.Bindings...)
+	for index := range bindings {
+		bindings[index].Enabled = true
+		bindings[index].RolloutPercent = rolloutPercent
+	}
+	applyPluginGroupScope(bindings, scope)
+	if err := m.repo.UpdateBindingsAndState(
+		ctx, installation.ID, bindings, installation.State, "", installation.EnabledAt, installation.State, installation.BinarySHA256,
+	); err != nil {
+		return nil, err
+	}
+	latest, err := m.repo.GetByID(ctx, installation.ID)
+	if err != nil {
+		return nil, err
+	}
+	if current := m.route.Load(); current != nil && current.pluginID == installation.ID {
+		m.updateRouteBindings(current, bindingRollout(latest.Bindings), apiKeyBindingRollout(latest.Bindings), bindingGroupScope(latest.Bindings))
+	}
+	return m.Get(ctx, installation.ID)
 }
 
 func (m *PluginManager) Disable(ctx context.Context, id int64) (*PluginInstallation, error) {
@@ -978,6 +1090,9 @@ func (m *PluginManager) RoundTripOpenAIOutbound(ctx context.Context, request *ht
 	if rollout <= 0 || int(stablePluginBucket(account.ID)) >= rollout {
 		return nil, false, nil
 	}
+	if !route.groupScope.Allows(account) {
+		return nil, false, nil
+	}
 	// 插件自己持有 HTTP 客户端，所以交给出站凭据之前必须补上原生 API Key 路径
 	// 的最终解析 IP 校验。
 	if account.Type == AccountTypeAPIKey {
@@ -1031,7 +1146,9 @@ func (m *PluginManager) ShouldRouteOpenAIOAuth(account *Account) bool {
 		return false
 	}
 	route := m.route.Load()
-	return route != nil && route.rolloutPercent > 0 && int(stablePluginBucket(account.ID)) < route.rolloutPercent
+	return route != nil && route.rolloutPercent > 0 &&
+		int(stablePluginBucket(account.ID)) < route.rolloutPercent &&
+		route.groupScope.Allows(account)
 }
 
 func (m *PluginManager) markRuntimeUnavailable(failedRoute *pluginRoute, message string) error {
@@ -1049,6 +1166,7 @@ func (m *PluginManager) markRuntimeUnavailable(failedRoute *pluginRoute, message
 		pluginID:             failedRoute.pluginID,
 		rolloutPercent:       failedRoute.rolloutPercent,
 		apiKeyRolloutPercent: failedRoute.apiKeyRolloutPercent,
+		groupScope:           failedRoute.groupScope,
 		unavailable:          message,
 	})
 	m.mu.Unlock()
@@ -1083,6 +1201,7 @@ func (m *PluginManager) publishRuntimeLocked(installation *PluginInstallation, r
 		runtime:              runtime,
 		rolloutPercent:       bindingRollout(installation.Bindings),
 		apiKeyRolloutPercent: apiKeyBindingRollout(installation.Bindings),
+		groupScope:           bindingGroupScope(installation.Bindings),
 	})
 }
 
@@ -1187,6 +1306,36 @@ func (m *PluginManager) removeManagedPath(target string) error {
 
 func hasEnabledOpenAIBinding(bindings []PluginBinding) bool {
 	return bindingRollout(bindings) > 0 || apiKeyBindingRollout(bindings) > 0
+}
+
+// bindingsHaveRollout 检查所有已启用的 OpenAI 出站绑定是否都是同一个灰度比例。
+func bindingsHaveRollout(bindings []PluginBinding, rollout int) bool {
+	matched := false
+	for _, binding := range bindings {
+		if !binding.Enabled || binding.Platform != PlatformOpenAI {
+			continue
+		}
+		if binding.Capability != PluginCapabilityOpenAIOAuthOutbound &&
+			binding.Capability != PluginCapabilityOpenAIAPIKeyOutbound {
+			continue
+		}
+		matched = true
+		if binding.RolloutPercent != rollout {
+			return false
+		}
+	}
+	return matched
+}
+
+func findPluginBinding(bindings []PluginBinding, capability PluginCapability) *PluginBinding {
+	for index := range bindings {
+		binding := &bindings[index]
+		if binding.Capability == capability.ID && binding.Platform == capability.Platform &&
+			binding.AccountType == capability.AccountType {
+			return binding
+		}
+	}
+	return nil
 }
 
 func bindingRollout(bindings []PluginBinding) int {
