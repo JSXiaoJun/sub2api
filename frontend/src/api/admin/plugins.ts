@@ -48,6 +48,10 @@ export interface PluginBinding {
   account_type: string
   enabled: boolean
   rollout_percent: number
+  /** true 表示所有匹配账号生效；false 表示仅 group_ids 中的账号分组生效。 */
+  all_groups: boolean
+  /** 账号分组 ID（不是请求所属的订阅分组）。 */
+  group_ids: number[]
 }
 
 export interface PluginInstallation {
@@ -109,11 +113,29 @@ export async function upload(file: File): Promise<PluginInstallation> {
 export async function enable(
   id: number,
   rolloutPercent: number,
-  acceptUntested: boolean
+  acceptUntested: boolean,
+  allGroups: boolean,
+  groupIDs: number[]
 ): Promise<PluginInstallation> {
   const { data } = await apiClient.post<PluginInstallation>(`/admin/plugins/${id}/enable`, {
     rollout_percent: rolloutPercent,
-    accept_untested: acceptUntested
+    accept_untested: acceptUntested,
+    all_groups: allGroups,
+    group_ids: groupIDs
+  })
+  return data
+}
+
+export async function updateScope(
+  id: number,
+  rolloutPercent: number,
+  allGroups: boolean,
+  groupIDs: number[]
+): Promise<PluginInstallation> {
+  const { data } = await apiClient.put<PluginInstallation>(`/admin/plugins/${id}/scope`, {
+    rollout_percent: rolloutPercent,
+    all_groups: allGroups,
+    group_ids: groupIDs
   })
   return data
 }
@@ -159,6 +181,7 @@ export default {
   list,
   upload,
   enable,
+  updateScope,
   disable,
   remove,
   getConfig,

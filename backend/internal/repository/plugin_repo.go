@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/Wei-Shaw/sub2api/internal/service"
+	"github.com/lib/pq"
 )
 
 type pluginRepository struct {
@@ -269,11 +270,17 @@ func replacePluginBindings(ctx context.Context, executor pluginBindingExecutor, 
 		return err
 	}
 	for _, binding := range bindings {
+		groupIDs := binding.GroupIDs
+		if groupIDs == nil {
+			groupIDs = []int64{}
+		}
 		if _, err := executor.ExecContext(ctx, `
 			INSERT INTO sub2api_plugin_bindings (
-				plugin_id, capability, platform, account_type, enabled, rollout_percent, created_at, updated_at
-			) VALUES ($1, $2, $3, $4, $5, $6, NOW(), NOW())
-		`, pluginID, binding.Capability, binding.Platform, binding.AccountType, binding.Enabled, binding.RolloutPercent); err != nil {
+				plugin_id, capability, platform, account_type, enabled, rollout_percent,
+				all_groups, group_ids, created_at, updated_at
+			) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, NOW(), NOW())
+		`, pluginID, binding.Capability, binding.Platform, binding.AccountType, binding.Enabled, binding.RolloutPercent,
+			binding.AllGroups, pq.Array(groupIDs)); err != nil {
 			return err
 		}
 	}
@@ -312,7 +319,7 @@ func scanPlugin(scanner pluginScanner) (*service.PluginInstallation, error) {
 func (r *pluginRepository) listBindings(ctx context.Context, pluginID int64) ([]service.PluginBinding, error) {
 	rows, err := r.db.QueryContext(ctx, `
 		SELECT id, plugin_id, capability, platform, account_type, enabled,
-		       rollout_percent, created_at, updated_at
+		       rollout_percent, all_groups, group_ids, created_at, updated_at
 		FROM sub2api_plugin_bindings WHERE plugin_id = $1 ORDER BY id
 	`, pluginID)
 	if err != nil {
@@ -324,6 +331,7 @@ func (r *pluginRepository) listBindings(ctx context.Context, pluginID int64) ([]
 		var binding service.PluginBinding
 		if err := rows.Scan(&binding.ID, &binding.PluginID, &binding.Capability, &binding.Platform,
 			&binding.AccountType, &binding.Enabled, &binding.RolloutPercent,
+			&binding.AllGroups, pq.Array(&binding.GroupIDs),
 			&binding.CreatedAt, &binding.UpdatedAt); err != nil {
 			return nil, err
 		}

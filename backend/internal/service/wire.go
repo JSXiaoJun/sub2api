@@ -469,9 +469,18 @@ func ProvideDeferredService(accountRepo AccountRepository, timingWheel *TimingWh
 // ProvideConcurrencyService creates ConcurrencyService and starts slot cleanup worker.
 func ProvideConcurrencyService(cache ConcurrencyCache, accountRepo AccountRepository, cfg *config.Config) *ConcurrencyService {
 	svc := NewConcurrencyService(cache)
+	port := 0
+	if cfg != nil {
+		port = cfg.Server.Port
+	}
+	// 先登记再清理：并存的其他实例据此保留本进程的槽位，本进程也据此保留它们的。
+	if err := svc.RegisterProcess(context.Background(), ProcessInstanceID(port)); err != nil {
+		logger.LegacyPrintf("service.concurrency", "Warning: register process failed: %v", err)
+	}
 	if err := svc.CleanupStaleProcessSlots(context.Background()); err != nil {
 		logger.LegacyPrintf("service.concurrency", "Warning: startup cleanup stale process slots failed: %v", err)
 	}
+	svc.StartProcessHeartbeat()
 	if cfg != nil {
 		svc.SetAccountLoadBatchCacheTTL(time.Duration(cfg.Gateway.Scheduling.LoadBatchCacheTTLMS) * time.Millisecond)
 		svc.StartSlotCleanupWorker(accountRepo, cfg.Gateway.Scheduling.SlotCleanupInterval)

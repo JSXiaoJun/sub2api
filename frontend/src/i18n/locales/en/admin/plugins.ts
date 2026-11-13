@@ -1,7 +1,7 @@
 export default {
   plugins: {
     title: 'Plugin Management',
-    description: 'Install and manage isolated OAuth outbound transport plugins. API Key flows are unchanged.',
+    description: 'Install and manage isolated OpenAI outbound transport plugins. OAuth accounts use the OAuth binding; API Key accounts use only the API Key binding (Responses streaming requests). The scope can be narrowed by account group.',
     upload: 'Install plugin',
     uploadHint: 'Only .s2plugin packages are accepted; trusted publisher signatures are required by default.',
     runtimeNotice: 'Plugin installation, enable/disable, and configuration are handled dynamically by the Sub2API host and normally do not require a host restart. Restart only when the host version or host configuration changes according to your deployment process.',
@@ -13,7 +13,15 @@ export default {
     disable: 'Disable',
     test: 'Test',
     uninstall: 'Uninstall',
-    rollout: 'OAuth traffic percentage',
+    rollout: 'Traffic rollout percentage',
+    rolloutHint: 'Within the selected account groups, accounts are bucketed by a stable hash of account ID; 100% means every account in the selected groups is affected.',
+    scope: 'Account-group scope',
+    scopeHint: 'Filtering uses the selected account\'s account groups, not the request\'s subscription group. If the same account also serves other groups, those requests still use the plugin.',
+    scopeAll: 'All groups',
+    scopeSelected: 'Selected groups',
+    scopeEmpty: 'Select at least one account group, or switch to all groups',
+    saveScope: 'Save scope',
+    scopeSaved: 'Plugin scope updated',
     compatibility: 'Version compatibility',
     currentVersion: 'Current Sub2API',
     requiredVersion: 'Required range',
@@ -39,12 +47,12 @@ export default {
     disableSuccess: 'Plugin disabled',
     uninstallSuccess: 'Plugin uninstalled',
     testSuccess: 'Plugin test passed',
-    confirmDisable: 'Disable this plugin? New OAuth requests immediately return to the built-in Sub2API path.',
+    confirmDisable: 'Disable this plugin? New OAuth and API Key streaming Responses requests immediately return to the built-in Sub2API path.',
     confirmUninstall: 'Uninstall this plugin? It must be disabled first. Installed files and configuration will be removed.',
     confirmUntested: 'This plugin is compatible but has not declared the current Sub2API version as tested. Enable it anyway?',
     fileRequired: 'Select a .s2plugin file',
     bridgeRejected: 'Plugin UI message validation failed',
-    onlyOpenAI: 'Initial capability: OpenAI OAuth outbound transport only',
-    noAccountCoupling: 'The scope is platform and account type. Account records are not changed and no per-account toggle is required.'
+    onlyOpenAI: 'Capabilities: OpenAI OAuth outbound transport; or OpenAI API Key Responses streaming outbound transport',
+    noAccountCoupling: 'The scope is platform and account type, optionally narrowed by account group. Account records are not changed and no per-account toggle is required.'
   }
 }

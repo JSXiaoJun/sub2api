@@ -616,3 +616,80 @@ func TestIncrementAccountWaitCount_NilCache(t *testing.T) {
 	require.NoError(t, err)
 	require.True(t, allowed)
 }
+
+type processRegistryCacheForTest struct {
+	stubConcurrencyCacheForTest
+	heartbeats       []string
+	unregistered     []string
+	releasedPrefixes []string
+	heartbeatErr     error
+	unregisterErr    error
+	releaseSlotsErr  error
+}
+
+func (c *processRegistryCacheForTest) HeartbeatProcess(_ context.Context, prefix, instanceID string) error {
+	c.heartbeats = append(c.heartbeats, prefix+"|"+instanceID)
+	return c.heartbeatErr
+}
+
+func (c *processRegistryCacheForTest) UnregisterProcess(_ context.Context, prefix, instanceID string) error {
+	c.unregistered = append(c.unregistered, prefix+"|"+instanceID)
+	return c.unregisterErr
+}
+
+func (c *processRegistryCacheForTest) ReleaseProcessSlots(_ context.Context, prefix string) error {
+	c.releasedPrefixes = append(c.releasedPrefixes, prefix)
+	return c.releaseSlotsErr
+}
+
+func TestRegisterProcess_HeartbeatsWithOwnPrefix(t *testing.T) {
+	cache := &processRegistryCacheForTest{}
+	svc := NewConcurrencyService(cache)
+
+	require.NoError(t, svc.RegisterProcess(context.Background(), "sub2api-blue:8080"))
+	require.Equal(t, []string{RequestIDPrefix() + "|sub2api-blue:8080"}, cache.heartbeats)
+}
+
+func TestRegisterProcess_CacheWithoutRegistryIsNoop(t *testing.T) {
+	svc := NewConcurrencyService(&stubConcurrencyCacheForTest{})
+
+	require.NoError(t, svc.RegisterProcess(context.Background(), "host:8080"))
+	svc.StartProcessHeartbeat()
+	require.NoError(t, svc.Stop(context.Background()))
+
+	var nilSvc *ConcurrencyService
+	require.NoError(t, nilSvc.RegisterProcess(context.Background(), "host:8080"))
+	nilSvc.StartProcessHeartbeat()
+	require.NoError(t, nilSvc.Stop(context.Background()))
+}
+
+func TestConcurrencyServiceStop_UnregistersAndReleasesOwnSlots(t *testing.T) {
+	cache := &processRegistryCacheForTest{}
+	svc := NewConcurrencyService(cache)
+	require.NoError(t, svc.RegisterProcess(context.Background(), "sub2api-green:8080"))
+	svc.StartProcessHeartbeat()
+
+	require.NoError(t, svc.Stop(context.Background()))
+	require.Equal(t, []string{RequestIDPrefix() + "|sub2api-green:8080"}, cache.unregistered)
+	require.Equal(t, []string{RequestIDPrefix()}, cache.releasedPrefixes)
+
+	// 重复停止不能 panic（close 已关闭的 channel）。
+	require.NoError(t, svc.Stop(context.Background()))
+}
+
+func TestConcurrencyServiceStop_ReleasesSlotsEvenWhenUnregisterFails(t *testing.T) {
+	unregisterErr := errors.New("redis down")
+	cache := &processRegistryCacheForTest{unregisterErr: unregisterErr}
+	svc := NewConcurrencyService(cache)
+	require.NoError(t, svc.RegisterProcess(context.Background(), "host:8080"))
+
+	err := svc.Stop(context.Background())
+	require.ErrorIs(t, err, unregisterErr)
+	require.Equal(t, []string{RequestIDPrefix()}, cache.releasedPrefixes)
+}
+
+func TestProcessInstanceID_IncludesPort(t *testing.T) {
+	id := ProcessInstanceID(8080)
+	require.True(t, strings.HasSuffix(id, ":8080"), id)
+	require.NotEqual(t, ProcessInstanceID(8080), ProcessInstanceID(8081))
+}

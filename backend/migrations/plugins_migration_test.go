@@ -24,6 +24,17 @@ func TestPluginsMigrationKeepsAccountSchemaUnchanged(t *testing.T) {
 	require.NotContains(t, sql, "account_id")
 }
 
+func TestPluginBindingGroupScopeMigrationDefaultsToAllGroups(t *testing.T) {
+	content, err := FS.ReadFile("251_plugin_binding_group_scope.sql")
+	require.NoError(t, err)
+
+	sql := strings.Join(strings.Fields(string(content)), " ")
+	require.Contains(t, sql, "ALTER TABLE sub2api_plugin_bindings")
+	require.Contains(t, sql, "ADD COLUMN IF NOT EXISTS all_groups BOOLEAN NOT NULL DEFAULT TRUE")
+	require.Contains(t, sql, "ADD COLUMN IF NOT EXISTS group_ids BIGINT[] NOT NULL DEFAULT '{}'::bigint[]")
+	require.NotContains(t, strings.ToUpper(sql), "ALTER TABLE ACCOUNTS")
+}
+
 func TestPluginArtifactMigrationSupportsExistingInstallations(t *testing.T) {
 	content, err := FS.ReadFile("230_plugin_artifacts.sql")
 	require.NoError(t, err)

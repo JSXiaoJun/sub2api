@@ -121,14 +121,37 @@
                 {{ plugin.description }}
               </p>
             </div>
-            <button
-              type="button"
-              class="btn btn-secondary btn-sm"
-              @click="openConfiguration(plugin)"
-            >
-              <Icon name="cog" size="sm" />
-              {{ t("admin.plugins.configure") }}
-            </button>
+            <div class="flex flex-wrap items-center gap-2">
+              <div
+                class="flex items-center gap-2 rounded-lg border border-gray-200 px-3 py-1.5 dark:border-dark-600"
+              >
+                <Toggle
+                  :model-value="hasEnabledBinding(plugin)"
+                  :disabled="
+                    busyID === plugin.id ||
+                    plugin.state === 'starting' ||
+                    (!hasEnabledBinding(plugin) &&
+                      !plugin.compatibility.compatible)
+                  "
+                  @update:model-value="(value) => togglePlugin(plugin, value)"
+                />
+                <span class="text-xs font-medium text-gray-600 dark:text-gray-300">
+                  {{
+                    hasEnabledBinding(plugin)
+                      ? t("admin.plugins.enabled")
+                      : t("admin.plugins.disabled")
+                  }}
+                </span>
+              </div>
+              <button
+                type="button"
+                class="btn btn-secondary btn-sm"
+                @click="openConfiguration(plugin)"
+              >
+                <Icon name="cog" size="sm" />
+                {{ t("admin.plugins.configure") }}
+              </button>
+            </div>
           </div>
 
           <div class="grid grid-cols-1 gap-x-6 gap-y-4 p-5 md:grid-cols-2">
@@ -211,27 +234,85 @@
               </p>
             </div>
 
-            <div class="md:col-span-2">
-              <label
-                class="flex items-center justify-between gap-4 text-xs font-medium text-gray-600 dark:text-gray-300"
-              >
-                <span>{{ t("admin.plugins.rollout") }}</span>
-                <span class="w-11 text-right font-mono"
-                  >{{
-                    rolloutValues[plugin.id] ?? currentRollout(plugin)
-                  }}%</span
+            <div class="space-y-4 md:col-span-2">
+              <div>
+                <div class="flex flex-wrap items-start justify-between gap-3">
+                  <div>
+                    <p class="text-xs font-medium uppercase text-gray-500">
+                      {{ t("admin.plugins.scope") }}
+                    </p>
+                    <p class="mt-1 max-w-xl text-xs text-gray-500 dark:text-gray-400">
+                      {{ t("admin.plugins.scopeHint") }}
+                    </p>
+                  </div>
+                  <div
+                    class="flex items-center gap-3 text-xs text-gray-600 dark:text-gray-300"
+                  >
+                    <label class="flex cursor-pointer items-center gap-1.5">
+                      <input
+                        type="radio"
+                        class="h-3.5 w-3.5 border-gray-300 text-primary-600 focus:ring-primary-500 dark:border-dark-500"
+                        :name="`plugin-scope-${plugin.id}`"
+                        :checked="scopeAll[plugin.id] !== false"
+                        @change="setScopeAll(plugin.id, true)"
+                      />
+                      {{ t("admin.plugins.scopeAll") }}
+                    </label>
+                    <label class="flex cursor-pointer items-center gap-1.5">
+                      <input
+                        type="radio"
+                        class="h-3.5 w-3.5 border-gray-300 text-primary-600 focus:ring-primary-500 dark:border-dark-500"
+                        :name="`plugin-scope-${plugin.id}`"
+                        :checked="scopeAll[plugin.id] === false"
+                        @change="setScopeAll(plugin.id, false)"
+                      />
+                      {{ t("admin.plugins.scopeSelected") }}
+                    </label>
+                  </div>
+                </div>
+                <GroupSelector
+                  v-if="scopeAll[plugin.id] === false"
+                  v-model="scopeGroups[plugin.id]"
+                  :groups="groups"
+                  platform="openai"
+                  class="mt-3"
+                />
+                <p
+                  v-if="
+                    scopeAll[plugin.id] === false &&
+                    (scopeGroups[plugin.id]?.length ?? 0) === 0
+                  "
+                  class="mt-2 text-xs text-red-600 dark:text-red-400"
                 >
-              </label>
-              <input
-                :value="rolloutValues[plugin.id] ?? currentRollout(plugin)"
-                type="range"
-                min="1"
-                max="100"
-                step="1"
-                class="mt-2 w-full accent-primary-600"
-                :disabled="hasEnabledBinding(plugin)"
-                @input="setRollout(plugin.id, $event)"
-              />
+                  {{ t("admin.plugins.scopeEmpty") }}
+                </p>
+              </div>
+
+              <div>
+                <label
+                  class="flex items-center justify-between gap-4 text-xs font-medium text-gray-600 dark:text-gray-300"
+                >
+                  <span>{{ t("admin.plugins.rollout") }}</span>
+                  <span class="w-11 text-right font-mono"
+                    >{{
+                      rolloutValues[plugin.id] ?? currentRollout(plugin)
+                    }}%</span
+                  >
+                </label>
+                <input
+                  :value="rolloutValues[plugin.id] ?? currentRollout(plugin)"
+                  type="range"
+                  min="1"
+                  max="100"
+                  step="1"
+                  class="mt-2 w-full accent-primary-600"
+                  :disabled="busyID === plugin.id"
+                  @input="setRollout(plugin.id, $event)"
+                />
+                <p class="mt-1 text-xs text-gray-500 dark:text-gray-400">
+                  {{ t("admin.plugins.rolloutHint") }}
+                </p>
+              </div>
             </div>
           </div>
 
@@ -248,28 +329,14 @@
               {{ t("admin.plugins.test") }}
             </button>
             <button
-              v-if="hasEnabledBinding(plugin)"
-              type="button"
-              class="btn btn-secondary btn-sm"
-              :disabled="busyID === plugin.id"
-              @click="disablePlugin(plugin)"
-            >
-              <Icon name="ban" size="sm" />
-              {{ t("admin.plugins.disable") }}
-            </button>
-            <button
-              v-else
+              v-if="hasEnabledBinding(plugin) && scopeDirty(plugin)"
               type="button"
               class="btn btn-primary btn-sm"
-              :disabled="
-                busyID === plugin.id ||
-                plugin.state === 'starting' ||
-                !plugin.compatibility.compatible
-              "
-              @click="enablePlugin(plugin)"
+              :disabled="busyID === plugin.id"
+              @click="saveScope(plugin)"
             >
-              <Icon name="play" size="sm" />
-              {{ t("admin.plugins.enable") }}
+              <Icon name="check" size="sm" />
+              {{ t("admin.plugins.saveScope") }}
             </button>
             <button
               type="button"
@@ -337,12 +404,16 @@ import { onBeforeUnmount, onMounted, ref } from "vue";
 import { useI18n } from "vue-i18n";
 import {
   adminAPI,
+  type PluginBinding,
   type PluginInstallation,
   type PluginUISession,
 } from "@/api/admin";
+import type { AdminGroup } from "@/types";
 import { useAppStore } from "@/stores";
 import AppLayout from "@/components/layout/AppLayout.vue";
 import BaseDialog from "@/components/common/BaseDialog.vue";
+import GroupSelector from "@/components/common/GroupSelector.vue";
+import Toggle from "@/components/common/Toggle.vue";
 import Icon from "@/components/icons/Icon.vue";
 import TotpStepUpDialog from "@/components/auth/TotpStepUpDialog.vue";
 import {
@@ -372,6 +443,9 @@ const uploading = ref(false);
 const busyID = ref<number | null>(null);
 const fileInput = ref<HTMLInputElement | null>(null);
 const rolloutValues = ref<Record<number, number>>({});
+const groups = ref<AdminGroup[]>([]);
+const scopeAll = ref<Record<number, boolean>>({});
+const scopeGroups = ref<Record<number, number[]>>({});
 const configPlugin = ref<PluginInstallation | null>(null);
 const uiSession = ref<PluginUISession | null>(null);
 const pluginFrame = ref<HTMLIFrameElement | null>(null);
@@ -409,12 +483,24 @@ async function loadPlugins(): Promise<void> {
   try {
     plugins.value = await adminAPI.plugins.list();
     for (const plugin of plugins.value) {
+      const binding = currentBinding(plugin);
       rolloutValues.value[plugin.id] = currentRollout(plugin);
+      scopeAll.value[plugin.id] = binding?.all_groups !== false;
+      scopeGroups.value[plugin.id] = [...(binding?.group_ids ?? [])];
     }
   } catch (error: unknown) {
     appStore.showError(errorMessage(error));
   } finally {
     loading.value = false;
+  }
+}
+
+async function loadGroups(): Promise<void> {
+  try {
+    // 包含停用分组：已保存的分组范围不能在界面上凭空消失。
+    groups.value = await adminAPI.groups.getAllIncludingInactive();
+  } catch (error: unknown) {
+    appStore.showError(errorMessage(error));
   }
 }
 
@@ -438,12 +524,14 @@ async function handleFileSelected(event: Event): Promise<void> {
   }
 }
 
+function currentBinding(plugin: PluginInstallation): PluginBinding | undefined {
+  // 绑定可能只有 API Key（openai.apikey.outbound_transport.v1），不能只按
+  // OAuth 能力查找，否则会把已保存的灰度比例显示成 100。
+  return plugin.bindings.find((item) => item.enabled) ?? plugin.bindings[0];
+}
+
 function currentRollout(plugin: PluginInstallation): number {
-  return (
-    plugin.bindings.find(
-      (binding) => binding.capability === "openai.oauth.outbound_transport.v1",
-    )?.rollout_percent || 100
-  );
+  return currentBinding(plugin)?.rollout_percent || 100;
 }
 
 function hasEnabledBinding(plugin: PluginInstallation): boolean {
@@ -455,7 +543,47 @@ function setRollout(id: number, event: Event): void {
   rolloutValues.value[id] = Math.min(100, Math.max(1, value));
 }
 
+function setScopeAll(id: number, all: boolean): void {
+  scopeAll.value[id] = all;
+}
+
+function selectedGroupIDs(plugin: PluginInstallation): number[] {
+  if (scopeAll.value[plugin.id] !== false) return [];
+  return [...(scopeGroups.value[plugin.id] ?? [])];
+}
+
+function sameGroupIDs(a: number[], b: number[]): boolean {
+  if (a.length !== b.length) return false;
+  const left = [...a].sort((x, y) => x - y);
+  const right = [...b].sort((x, y) => x - y);
+  return left.every((value, index) => value === right[index]);
+}
+
+function scopeDirty(plugin: PluginInstallation): boolean {
+  if (!hasEnabledBinding(plugin)) return false;
+  const binding = currentBinding(plugin);
+  if (!binding) return false;
+  const all = scopeAll.value[plugin.id] !== false;
+  return (
+    (rolloutValues.value[plugin.id] ?? currentRollout(plugin)) !==
+      binding.rollout_percent ||
+    all !== binding.all_groups ||
+    !sameGroupIDs(selectedGroupIDs(plugin), binding.group_ids ?? [])
+  );
+}
+
+function togglePlugin(plugin: PluginInstallation, enabled: boolean): void {
+  if (enabled) void enablePlugin(plugin);
+  else void disablePlugin(plugin);
+}
+
 async function enablePlugin(plugin: PluginInstallation): Promise<void> {
+  const allGroups = scopeAll.value[plugin.id] !== false;
+  const groupIDs = selectedGroupIDs(plugin);
+  if (!allGroups && groupIDs.length === 0) {
+    appStore.showError(t("admin.plugins.scopeEmpty"));
+    return;
+  }
   let acceptUntested = false;
   if (!plugin.compatibility.tested) {
     acceptUntested = window.confirm(t("admin.plugins.confirmUntested"));
@@ -468,9 +596,37 @@ async function enablePlugin(plugin: PluginInstallation): Promise<void> {
         plugin.id,
         rolloutValues.value[plugin.id] || 100,
         acceptUntested,
+        allGroups,
+        groupIDs,
       ),
     );
     appStore.showSuccess(t("admin.plugins.enableSuccess"));
+    await loadPlugins();
+  } catch (error: unknown) {
+    reportSensitiveActionError(error);
+  } finally {
+    busyID.value = null;
+  }
+}
+
+async function saveScope(plugin: PluginInstallation): Promise<void> {
+  const allGroups = scopeAll.value[plugin.id] !== false;
+  const groupIDs = selectedGroupIDs(plugin);
+  if (!allGroups && groupIDs.length === 0) {
+    appStore.showError(t("admin.plugins.scopeEmpty"));
+    return;
+  }
+  busyID.value = plugin.id;
+  try {
+    await pluginStepUp.run(() =>
+      adminAPI.plugins.updateScope(
+        plugin.id,
+        rolloutValues.value[plugin.id] || 100,
+        allGroups,
+        groupIDs,
+      ),
+    );
+    appStore.showSuccess(t("admin.plugins.scopeSaved"));
     await loadPlugins();
   } catch (error: unknown) {
     reportSensitiveActionError(error);
@@ -725,6 +881,7 @@ function compatibilityClass(
 onMounted(() => {
   window.addEventListener("message", handleBridgeMessage);
   void loadPlugins();
+  void loadGroups();
 });
 
 onBeforeUnmount(() => {

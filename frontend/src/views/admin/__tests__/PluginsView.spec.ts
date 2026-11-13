@@ -11,6 +11,8 @@ const {
   listPlugins,
   uploadPlugin,
   enablePlugin,
+  updatePluginScope,
+  listGroups,
   savePluginConfig,
   createUISession,
   stepUpRun,
@@ -18,6 +20,8 @@ const {
   listPlugins: vi.fn(),
   uploadPlugin: vi.fn(),
   enablePlugin: vi.fn(),
+  updatePluginScope: vi.fn(),
+  listGroups: vi.fn(),
   savePluginConfig: vi.fn(),
   createUISession: vi.fn(),
   stepUpRun: vi.fn((action: () => Promise<unknown>) => action()),
@@ -29,12 +33,17 @@ vi.mock('@/api/admin', () => ({
       list: listPlugins,
       upload: uploadPlugin,
       enable: enablePlugin,
+      updateScope: updatePluginScope,
       disable: vi.fn(),
       remove: vi.fn(),
       getConfig: vi.fn().mockResolvedValue({}),
       saveConfig: savePluginConfig,
       test: vi.fn().mockResolvedValue({ success: true, message: 'ok', latency_ms: 1 }),
       createUISession,
+    },
+    groups: {
+      getAll: listGroups,
+      getAllIncludingInactive: listGroups,
     },
   },
 }))
@@ -44,6 +53,15 @@ vi.mock('@/stores', () => ({
     showError: vi.fn(),
     showSuccess: vi.fn(),
     showInfo: vi.fn(),
+  }),
+  useAuthStore: () => ({
+    isSimpleMode: false,
+  }),
+}))
+
+vi.mock('@/stores/app', () => ({
+  useAppStore: () => ({
+    cachedPublicSettings: { server_utc_offset: 0 },
   }),
 }))
 
@@ -95,6 +113,8 @@ const plugin = {
       account_type: 'oauth',
       enabled: false,
       rollout_percent: 100,
+      all_groups: true,
+      group_ids: [],
     },
   ],
   compatibility: {
@@ -133,6 +153,20 @@ describe('管理员插件页二次验证', () => {
     listPlugins.mockResolvedValue([plugin])
     uploadPlugin.mockResolvedValue(plugin)
     enablePlugin.mockResolvedValue(plugin)
+    updatePluginScope.mockResolvedValue(plugin)
+    listGroups.mockResolvedValue([
+      {
+        id: 11,
+        name: 'OpenAI',
+        description: null,
+        platform: 'openai',
+        rate_multiplier: 1,
+        is_exclusive: false,
+        status: 'active',
+        subscription_type: 'standard',
+        account_count: 2,
+      },
+    ])
     savePluginConfig.mockResolvedValue({ enabled: true })
     createUISession.mockResolvedValue({
       url: '/api/v1/plugin-ui/token/index.html#bridge_token=bridge',
@@ -146,13 +180,29 @@ describe('管理员插件页二次验证', () => {
     const wrapper = mountView()
     await flushPromises()
 
-    const button = wrapper.findAll('button').find((item) => item.text().includes('admin.plugins.enable'))
-    expect(button).toBeDefined()
-    await button!.trigger('click')
+    const toggle = wrapper.get('[role="switch"]')
+    await toggle.trigger('click')
     await flushPromises()
 
     expect(stepUpRun).toHaveBeenCalledTimes(1)
-    expect(enablePlugin).toHaveBeenCalledWith(7, 100, false)
+    expect(enablePlugin).toHaveBeenCalledWith(7, 100, false, true, [])
+  })
+
+  it('启用时把选中的账号分组传给后端', async () => {
+    const wrapper = mountView()
+    await flushPromises()
+
+    const scopeRadios = wrapper.findAll('input[type="radio"]')
+    expect(scopeRadios).toHaveLength(2)
+    await scopeRadios[1].trigger('change')
+    await flushPromises()
+
+    const groupCheckbox = wrapper.get('input[type="checkbox"]')
+    await groupCheckbox.setValue(true)
+    await wrapper.get('[role="switch"]').trigger('click')
+    await flushPromises()
+
+    expect(enablePlugin).toHaveBeenCalledWith(7, 100, false, false, [11])
   })
 
   it.each([7, 8])('keeps the latest session when reopening configuration for plugin %s', async (id) => {

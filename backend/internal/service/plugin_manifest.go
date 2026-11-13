@@ -15,14 +15,15 @@ import (
 )
 
 const (
-	PluginCapabilityOpenAIOAuthOutbound = "openai.oauth.outbound_transport.v1"
-	PluginStateDisabled                 = "disabled"
-	PluginStateStarting                 = "starting"
-	PluginStateEnabled                  = "enabled"
-	PluginStateError                    = "error"
-	PluginStateIncompatible             = "incompatible"
-	PluginSignatureTrusted              = "trusted"
-	PluginSignatureUnsigned             = "unsigned"
+	PluginCapabilityOpenAIOAuthOutbound  = "openai.oauth.outbound_transport.v1"
+	PluginCapabilityOpenAIAPIKeyOutbound = "openai.apikey.outbound_transport.v1"
+	PluginStateDisabled                  = "disabled"
+	PluginStateStarting                  = "starting"
+	PluginStateEnabled                   = "enabled"
+	PluginStateError                     = "error"
+	PluginStateIncompatible              = "incompatible"
+	PluginSignatureTrusted               = "trusted"
+	PluginSignatureUnsigned              = "unsigned"
 )
 
 var pluginIDPattern = regexp.MustCompile(`^[a-z0-9]+(?:[._-][a-z0-9]+)+$`)
@@ -115,15 +116,19 @@ type PluginInstallation struct {
 }
 
 type PluginBinding struct {
-	ID             int64     `json:"id"`
-	PluginID       int64     `json:"plugin_id"`
-	Capability     string    `json:"capability"`
-	Platform       string    `json:"platform"`
-	AccountType    string    `json:"account_type"`
-	Enabled        bool      `json:"enabled"`
-	RolloutPercent int       `json:"rollout_percent"`
-	CreatedAt      time.Time `json:"created_at"`
-	UpdatedAt      time.Time `json:"updated_at"`
+	ID             int64  `json:"id"`
+	PluginID       int64  `json:"plugin_id"`
+	Capability     string `json:"capability"`
+	Platform       string `json:"platform"`
+	AccountType    string `json:"account_type"`
+	Enabled        bool   `json:"enabled"`
+	RolloutPercent int    `json:"rollout_percent"`
+	// AllGroups 为 true 时对所有匹配账号生效；false 时只对 GroupIDs 中的账号分组生效。
+	// 分组按「被调度账号所属分组」判断，而不是请求所属的订阅分组。
+	AllGroups bool      `json:"all_groups"`
+	GroupIDs  []int64   `json:"group_ids"`
+	CreatedAt time.Time `json:"created_at"`
+	UpdatedAt time.Time `json:"updated_at"`
 }
 
 type PluginRepository interface {
@@ -169,8 +174,8 @@ func (m PluginManifest) Validate() error {
 		return errors.New("插件必须声明至少一个能力")
 	}
 	for _, capability := range m.Capabilities {
-		if capability.ID != PluginCapabilityOpenAIOAuthOutbound || capability.Platform != PlatformOpenAI || capability.AccountType != AccountTypeOAuth {
-			return fmt.Errorf("初期仅支持能力 %s", PluginCapabilityOpenAIOAuthOutbound)
+		if !validOpenAIOutboundCapability(capability.ID, capability.Platform, capability.AccountType) {
+			return fmt.Errorf("不支持的出站能力或账号范围: %s", capability.ID)
 		}
 	}
 	runtimeEntry, ok := m.Runtimes[m.RuntimeKey()]
@@ -201,6 +206,17 @@ func safePluginRelativePath(path string) bool {
 	cleaned := strings.ReplaceAll(strings.TrimSpace(path), "\\", "/")
 	return cleaned != "" && cleaned != "." && !strings.HasPrefix(cleaned, "/") &&
 		!strings.HasPrefix(cleaned, "../") && !strings.Contains(cleaned, "/../") && cleaned == strings.TrimPrefix(cleaned, "./")
+}
+
+// Each capability grants exactly one account type. The API Key transport does not
+// grant the account-directory/credential-enumeration host service; see
+// pluginCapabilityAccountScopeGrants.
+func validOpenAIOutboundCapability(id, platform, accountType string) bool {
+	if platform != PlatformOpenAI {
+		return false
+	}
+	return (id == PluginCapabilityOpenAIOAuthOutbound && accountType == AccountTypeOAuth) ||
+		(id == PluginCapabilityOpenAIAPIKeyOutbound && accountType == AccountTypeAPIKey)
 }
 
 func (m PluginManifest) MarshalJSONBytes() ([]byte, error) {

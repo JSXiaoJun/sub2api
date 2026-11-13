@@ -81,8 +81,10 @@ func (h *PluginHandler) Upload(c *gin.Context) {
 }
 
 type pluginEnableRequest struct {
-	AcceptUntested bool `json:"accept_untested"`
-	RolloutPercent int  `json:"rollout_percent"`
+	AcceptUntested bool    `json:"accept_untested"`
+	RolloutPercent int     `json:"rollout_percent"`
+	AllGroups      *bool   `json:"all_groups"`
+	GroupIDs       []int64 `json:"group_ids"`
 }
 
 func (h *PluginHandler) Enable(c *gin.Context) {
@@ -95,7 +97,45 @@ func (h *PluginHandler) Enable(c *gin.Context) {
 		response.BadRequest(c, "启用参数无效")
 		return
 	}
-	plugin, err := h.manager.Enable(c.Request.Context(), id, request.AcceptUntested, request.RolloutPercent)
+	// 旧客户端不传 all_groups 时保持“全部分组”，避免升级后意外收窄范围。
+	allGroups := true
+	if request.AllGroups != nil {
+		allGroups = *request.AllGroups
+	}
+	plugin, err := h.manager.Enable(
+		c.Request.Context(), id, request.AcceptUntested, request.RolloutPercent, allGroups, request.GroupIDs,
+	)
+	if err != nil {
+		response.BadRequest(c, err.Error())
+		return
+	}
+	response.Success(c, plugin)
+}
+
+type pluginScopeRequest struct {
+	RolloutPercent int     `json:"rollout_percent"`
+	AllGroups      *bool   `json:"all_groups"`
+	GroupIDs       []int64 `json:"group_ids"`
+}
+
+// UpdateScope 在插件保持启用时调整灰度比例与账号分组范围。
+func (h *PluginHandler) UpdateScope(c *gin.Context) {
+	id, ok := pluginIDParam(c)
+	if !ok {
+		return
+	}
+	request := pluginScopeRequest{RolloutPercent: 100}
+	if err := c.ShouldBindJSON(&request); err != nil {
+		response.BadRequest(c, "生效范围参数无效")
+		return
+	}
+	allGroups := true
+	if request.AllGroups != nil {
+		allGroups = *request.AllGroups
+	}
+	plugin, err := h.manager.UpdateScope(
+		c.Request.Context(), id, request.RolloutPercent, allGroups, request.GroupIDs,
+	)
 	if err != nil {
 		response.BadRequest(c, err.Error())
 		return
