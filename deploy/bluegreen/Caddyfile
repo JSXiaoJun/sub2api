@@ -46,10 +46,14 @@
 	}
 
 	# -------------------------------------------------------------------------
-	# Request size limit (matches GATEWAY_MAX_BODY_SIZE default)
+	# Request size limit
 	# -------------------------------------------------------------------------
+	# Follows GATEWAY_MAX_BODY_SIZE (bytes) from the deployment's .env, which
+	# docker-compose.bg.yml passes into this container. A fixed value here would
+	# answer 413 for bodies the application itself is configured to accept.
+	# Changing it needs `./bluegreen.sh recreate-edge`.
 	request_body {
-		max_size 256MB
+		max_size {$GATEWAY_MAX_BODY_SIZE:268435456}
 	}
 
 	# -------------------------------------------------------------------------

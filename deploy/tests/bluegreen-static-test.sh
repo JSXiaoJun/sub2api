@@ -47,7 +47,8 @@ for needle in \
 	'SERVER_TRUSTED_PROXIES=' \
 	'PRICING_DATA_DIR=' \
 	'LOG_OUTPUT_FILE_PATH=' \
-	'container_name: sub2api-edge'
+	'container_name: sub2api-edge' \
+	'"${BG_EDGE_BIND_IP:-0.0.0.0}:${BG_EDGE_PORT:-8080}:8080"'
 do
 	grep -Fq -- "$needle" "$compose" || fail "$compose is missing: $needle"
 done
@@ -77,6 +78,20 @@ for needle in \
 do
 	grep -Fq -- "$needle" "$caddyfile" || fail "$caddyfile is missing: $needle"
 done
+
+# The edge must not reject a body the application accepts: its limit follows
+# GATEWAY_MAX_BODY_SIZE, which the compose file has to hand to the edge
+# container (the application service alone is not enough).
+grep -Fq -- 'max_size {$GATEWAY_MAX_BODY_SIZE:268435456}' "$caddyfile" ||
+	fail "$caddyfile must take the request body limit from GATEWAY_MAX_BODY_SIZE"
+edge_env=$(awk '
+	/^  edge:/ { in_edge = 1; next }
+	in_edge && /^  [A-Za-z0-9_-]+:/ { in_edge = 0 }
+	in_edge && /^[a-z]/ { in_edge = 0 }
+	in_edge { print }
+' "$compose")
+printf '%s\n' "$edge_env" | grep -Fq -- '- GATEWAY_MAX_BODY_SIZE=${GATEWAY_MAX_BODY_SIZE:-268435456}' ||
+	fail "$compose does not pass GATEWAY_MAX_BODY_SIZE to the edge service"
 
 # text/event-stream must never be compressed, otherwise SSE turns into bursts.
 if grep -qE 'header Content-Type +(text/\*|\*/\*)' "$caddyfile"; then

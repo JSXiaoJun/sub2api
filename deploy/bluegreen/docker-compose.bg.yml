@@ -71,6 +71,8 @@ services:
       - DATABASE_PASSWORD=${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required}
       - DATABASE_DBNAME=${POSTGRES_DB:-sub2api}
       - DATABASE_SSLMODE=${DATABASE_SSLMODE:-disable}
+      # Per slot. While both slots run, PostgreSQL sees twice this many
+      # connections; bluegreen.sh warns when that exceeds POSTGRES_MAX_CONNECTIONS.
       - DATABASE_MAX_OPEN_CONNS=${DATABASE_MAX_OPEN_CONNS:-50}
       - DATABASE_MAX_IDLE_CONNS=${DATABASE_MAX_IDLE_CONNS:-10}
       - DATABASE_CONN_MAX_LIFETIME_MINUTES=${DATABASE_CONN_MAX_LIFETIME_MINUTES:-30}
@@ -235,6 +237,9 @@ services:
       - ./.runtime/caddy:/data
     environment:
       - TZ=${TZ:-Asia/Shanghai}
+      # Read by the Caddyfile as the request body limit, so the edge never
+      # rejects a body the application would accept.
+      - GATEWAY_MAX_BODY_SIZE=${GATEWAY_MAX_BODY_SIZE:-268435456}
     networks:
       - bg
     healthcheck:
