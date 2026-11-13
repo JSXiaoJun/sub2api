@@ -217,6 +217,98 @@ func (s *ConcurrencyService) CleanupStaleProcessSlots(ctx context.Context) error
 }
 
 const (
+	// ConcurrencyProcessLivenessTTL 是进程心跳的有效期：超过这个时间没有续期的进程
+	// 被视为已死，其槽位会在其他实例启动时被回收。
+	ConcurrencyProcessLivenessTTL = 90 * time.Second
+
+	concurrencyProcessHeartbeatInterval = 20 * time.Second
+	concurrencyProcessRegistryTimeout   = 3 * time.Second
+)
+
+// ConcurrencyProcessRegistry 让多个并存的实例（蓝绿部署的两个槽位、多副本）互相可见，
+// 这样一个实例启动时只回收已死进程的槽位，不会清掉另一个实例的在途请求。
+type ConcurrencyProcessRegistry interface {
+	HeartbeatProcess(ctx context.Context, requestPrefix, instanceID string) error
+	UnregisterProcess(ctx context.Context, requestPrefix, instanceID string) error
+	ReleaseProcessSlots(ctx context.Context, requestPrefix string) error
+}
+
+// ProcessInstanceID 标识“同一个运行位置”：容器（主机名即容器 ID）或主机上的某个端口。
+// 同一位置上只可能有一个进程，所以登记表里相同标识的旧条目必然是当前进程的前身。
+func ProcessInstanceID(port int) string {
+	host, err := os.Hostname()
+	if err != nil || host == "" {
+		host = "unknown"
+	}
+	return host + ":" + strconv.Itoa(port)
+}
+
+// RegisterProcess 登记当前进程。必须在 CleanupStaleProcessSlots 之前调用。
+func (s *ConcurrencyService) RegisterProcess(ctx context.Context, instanceID string) error {
+	if s == nil || s.cache == nil {
+		return nil
+	}
+	registry, ok := s.cache.(ConcurrencyProcessRegistry)
+	if !ok {
+		return nil
+	}
+	s.processInstanceID = instanceID
+	return registry.HeartbeatProcess(ctx, RequestIDPrefix(), instanceID)
+}
+
+// StartProcessHeartbeat 周期性续期登记，直到 Stop 被调用。
+func (s *ConcurrencyService) StartProcessHeartbeat() {
+	if s == nil || s.cache == nil {
+		return
+	}
+	registry, ok := s.cache.(ConcurrencyProcessRegistry)
+	if !ok {
+		return
+	}
+	s.heartbeatStartOnce.Do(func() {
+		stop := make(chan struct{})
+		s.heartbeatStop = stop
+		go func() {
+			ticker := time.NewTicker(concurrencyProcessHeartbeatInterval)
+			defer ticker.Stop()
+			for {
+				select {
+				case <-stop:
+					return
+				case <-ticker.C:
+					ctx, cancel := context.WithTimeout(context.Background(), concurrencyProcessRegistryTimeout)
+					err := registry.HeartbeatProcess(ctx, RequestIDPrefix(), s.processInstanceID)
+					cancel()
+					if err != nil {
+						logger.LegacyPrintf("service.concurrency", "Warning: process heartbeat failed: %v", err)
+					}
+				}
+			}
+		}()
+	})
+}
+
+// Stop 注销当前进程并释放它仍持有的槽位。HTTP 服务关闭之后调用。
+func (s *ConcurrencyService) Stop(ctx context.Context) error {
+	if s == nil || s.cache == nil {
+		return nil
+	}
+	registry, ok := s.cache.(ConcurrencyProcessRegistry)
+	if !ok {
+		return nil
+	}
+	s.heartbeatStopOnce.Do(func() {
+		if s.heartbeatStop != nil {
+			close(s.heartbeatStop)
+		}
+	})
+	return errors.Join(
+		registry.UnregisterProcess(ctx, RequestIDPrefix(), s.processInstanceID),
+		registry.ReleaseProcessSlots(ctx, RequestIDPrefix()),
+	)
+}
+
+const (
 	// 默认等待队列额外槽位
 	defaultExtraWaitSlots = 20
 
@@ -235,6 +327,11 @@ type ConcurrencyService struct {
 	accountLoadCacheMu  sync.RWMutex
 	accountLoadCache    map[string]cachedAccountLoadBatch
 	accountLoadGroup    singleflight.Group
+
+	processInstanceID  string
+	heartbeatStartOnce sync.Once
+	heartbeatStopOnce  sync.Once
+	heartbeatStop      chan struct{}
 }
 
 type cachedAccountLoadBatch struct {
