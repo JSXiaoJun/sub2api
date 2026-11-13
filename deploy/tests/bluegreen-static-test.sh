@@ -36,6 +36,13 @@ if grep -nE 'mapfile|readarray|declare -A|\$\{[A-Za-z_][A-Za-z0-9_]*\^\^' "$scri
 	fail "$script uses bash-4-only syntax"
 fi
 
+# bash 3.2 treats the bytes of a multibyte character that follows $name as part
+# of the variable name, so "$var。请" dies with `var?: unbound variable` under
+# `set -u`. Always brace the expansion when non-ASCII text follows it.
+if LC_ALL=C grep -nE '\$[A-Za-z_][A-Za-z0-9_]*[^[:print:][:space:]]' "$script" >/dev/null; then
+	fail "$script expands a plain \$name directly before a non-ASCII character (use \${name})"
+fi
+
 # -----------------------------------------------------------------------------
 # 2. Compose wiring
 # -----------------------------------------------------------------------------

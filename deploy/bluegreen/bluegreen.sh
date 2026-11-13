@@ -922,7 +922,7 @@ check_db_connections() {
 	esac
 	# PostgreSQL keeps 3 connections back for superusers by default.
 	if [ $((per_slot * 2)) -gt $((max - 3)) ]; then
-		warn "两个槽位并存时最多会打开 $((per_slot * 2)) 个数据库连接(DATABASE_MAX_OPEN_CONNS=$per_slot × 2),超过 PostgreSQL 的可用上限 $((max - 3))$assumed。请调大 POSTGRES_MAX_CONNECTIONS 或调小 DATABASE_MAX_OPEN_CONNS,否则两个槽位同时繁忙时会出现 too many clients。"
+		warn "两个槽位并存时最多会打开 $((per_slot * 2)) 个数据库连接(DATABASE_MAX_OPEN_CONNS=$per_slot × 2),超过 PostgreSQL 的可用上限 $((max - 3))${assumed}。请调大 POSTGRES_MAX_CONNECTIONS 或调小 DATABASE_MAX_OPEN_CONNS,否则两个槽位同时繁忙时会出现 too many clients。"
 	fi
 }
 
@@ -1173,7 +1173,7 @@ cmd_deploy() {
 		die "启动 $target 失败,当前流量仍在 $from"
 	if ! wait_ready "$target"; then
 		stop_failed_slot "$target"
-		die "$target 未就绪,已停止它;当前流量仍在 $from。日志: $0 logs $target"
+		die "$target 未就绪,已停止它;当前流量仍在 ${from}。日志: $0 logs $target"
 	fi
 
 	cutover "$target" "$from"
@@ -1253,7 +1253,7 @@ cmd_rollback() {
 			die "启动 $target 失败,流量仍在 $from"
 		if ! wait_ready "$target"; then
 			stop_failed_slot "$target"
-			die "$target 未就绪,已停止它;流量仍在 $from。日志: $0 logs $target"
+			die "$target 未就绪,已停止它;流量仍在 ${from}。日志: $0 logs $target"
 		fi
 	fi
 

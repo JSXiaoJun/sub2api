@@ -28,12 +28,14 @@ func newProcessRegistryFixture(t *testing.T) *processRegistryFixture {
 	ctx := context.Background()
 	// 隔离一次性遗留清扫，只验证登记表驱动的清理。
 	require.NoError(t, client.Set(ctx, legacyWaitSweepMarkerKey, "1", 0).Err())
+	cache, ok := NewConcurrencyCache(client, 15, 900).(*concurrencyCache)
+	require.True(t, ok, "NewConcurrencyCache must return *concurrencyCache")
 	return &processRegistryFixture{
 		t:      t,
 		ctx:    ctx,
 		server: server,
 		client: client,
-		cache:  NewConcurrencyCache(client, 15, 900).(*concurrencyCache),
+		cache:  cache,
 	}
 }
 
