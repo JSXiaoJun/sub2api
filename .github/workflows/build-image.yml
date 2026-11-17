@@ -8,11 +8,11 @@ on:
       image_tag:
         description: 'Image tag (without registry/repo)'
         required: true
-        default: '0.2.19-apikey-plugin'
+        default: '0.2.22-apikey-plugin'
       version:
         description: 'Value baked into main.Version / plugin compatibility'
         required: true
-        default: '0.2.19'
+        default: '0.2.22'
       platform:
         description: 'Target platform'
         required: true

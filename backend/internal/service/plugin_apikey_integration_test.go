@@ -36,9 +36,10 @@ func apiKeyPluginTestEnv(t *testing.T) (string, string, string) {
 
 func installAPIKeyPlugin(t *testing.T, pkg, keyID, pub string) *PluginInstallation {
 	t.Helper()
+	hostVersion := apiKeyPluginHostVersion(t)
 	cfg := testPluginConfig(t.TempDir(), false)
 	cfg.Plugins.TrustedPublishers = map[string]string{keyID: pub}
-	installer := NewPluginPackageInstaller(cfg, PluginHostInfo{Version: "0.2.21", BuildType: "source"})
+	installer := NewPluginPackageInstaller(cfg, PluginHostInfo{Version: hostVersion, BuildType: "source"})
 	file, err := os.Open(pkg)
 	require.NoError(t, err)
 	defer func() { _ = file.Close() }()
@@ -51,10 +52,22 @@ func installAPIKeyPlugin(t *testing.T, pkg, keyID, pub string) *PluginInstallati
 	require.Equal(t, PluginCapabilityOpenAIAPIKeyOutbound, installation.Manifest.Capabilities[0].ID)
 	require.Equal(t, AccountTypeAPIKey, installation.Manifest.Capabilities[0].AccountType)
 	require.Equal(t, PlatformOpenAI, installation.Manifest.Capabilities[0].Platform)
-	compatibility := EvaluatePluginCompatibility(installation.Manifest, PluginHostInfo{Version: "0.2.21"})
+	compatibility := EvaluatePluginCompatibility(installation.Manifest, PluginHostInfo{Version: hostVersion})
 	require.True(t, compatibility.Compatible, compatibility.Message)
 	require.True(t, compatibility.Tested, compatibility.Message)
 	return installation
+}
+
+// apiKeyPluginHostVersion 从 backend/cmd/server/VERSION 读出宿主版本，避免候选包的
+// requires 范围只在测试里成立。生产构建可能用 -ldflags 覆盖 main.Version，这里按仓库
+// 声明的版本校验，并随 VERSION 升级自动跟上。
+func apiKeyPluginHostVersion(t *testing.T) string {
+	t.Helper()
+	b, err := os.ReadFile(filepath.Join("..", "..", "cmd", "server", "VERSION"))
+	require.NoError(t, err, "读取宿主 VERSION 失败")
+	version := strings.TrimSpace(string(b))
+	require.NotEmpty(t, version)
+	return version
 }
 
 func startAPIKeyPluginRuntime(t *testing.T, installation *PluginInstallation, configJSON string) *pluginRuntime {

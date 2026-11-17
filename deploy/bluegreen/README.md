@@ -70,7 +70,7 @@ edge 也只监听 `127.0.0.1`,不会把明文端口暴露到所有网卡。
 ## 日常升级
 
 ```bash
-./bluegreen.sh deploy --image weishaw/sub2api:0.2.21
+./bluegreen.sh deploy --image weishaw/sub2api:0.2.22
 ```
 
 流程:拉镜像 → 把标签固定为 digest → 部署到空闲槽位 → 等 `/health` → 改写 `edge` 的上游顺序并热加载 → 校验入口。

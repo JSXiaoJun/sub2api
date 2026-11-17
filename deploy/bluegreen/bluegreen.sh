@@ -120,8 +120,8 @@ Sub2API 蓝绿部署工具
 
 示例:
   ./bluegreen.sh init
-  ./bluegreen.sh deploy --image weishaw/sub2api:0.2.21
-  ./bluegreen.sh deploy --image weishaw/sub2api:0.2.21 --stop-old=600
+  ./bluegreen.sh deploy --image weishaw/sub2api:0.2.22
+  ./bluegreen.sh deploy --image weishaw/sub2api:0.2.22 --stop-old=600
   ./bluegreen.sh rollback
   BG_EDGE_PORT=8081 ./bluegreen.sh init --force && ./bluegreen.sh recreate-edge
 EOF

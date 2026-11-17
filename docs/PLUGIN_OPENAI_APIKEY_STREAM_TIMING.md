@@ -1,14 +1,14 @@
 # OpenAI API Key 出站插件（首个事件计时）：站点适配与维护
 
 本文记录把 AM1 的 `inventory.openai.stream-timing`（0.1.4-am1.1）API Key 适配包接入本仓库
-Sub2API 0.2.21 的改动、部署方式、验证结果、已知限制和回退步骤。
+Sub2API 0.2.22 的改动、部署方式、验证结果、已知限制和回退步骤。
 
 ## 1. 适用对象
 
 | 项目 | 值 |
 | --- | --- |
-| 宿主基线 | Sub2API `0.2.21`（`backend/cmd/server/VERSION`；由 0.2.20 + 上游 v0.2.21 合并而来） |
-| 宿主改造分支 | `feat/bluegreen-deploy`（旧分支 `feat/plugin-apikey-0.2.20` 为 0.2.20 基线） |
+| 宿主基线 | Sub2API `0.2.22`（`backend/cmd/server/VERSION`；由本地改造分支 + 上游 v0.2.22 合并而来） |
+| 宿主改造分支 | `main`（历史：`feat/bluegreen-deploy` 为 0.2.21 基线，`feat/plugin-apikey-0.2.20` 为 0.2.20 基线） |
 | 插件 ID / 版本 | `inventory.openai.stream-timing` / `0.1.4-am1.1`（派生 API Key-only 包） |
 | 能力 | `openai.apikey.outbound_transport.v1`，平台 `openai`，账号类型 `apikey` |
 | 账号范围 | **仅 OpenAI → API Key 上游账号**；OAuth 账号不使用此绑定 |
@@ -55,7 +55,7 @@ Sub2API 会把部分接口转换为 `/responses` 流式请求（Chat Completions
 
 ### 3.1 先决条件
 
-- 宿主必须是包含本分支改动的构建（未改动的 0.2.21 只支持 OAuth 能力，上传候选包会显示
+- 宿主必须是包含本分支改动的构建（未改动的 0.2.22 只支持 OAuth 能力，上传候选包会显示
   「不支持的出站能力」）。这一步需要重新构建并重启主应用。
 - 以 Docker 部署为例：数据卷 `sub2api_data` 挂载到 `/app/data`，配置为
   `/app/data/config.yaml`，插件目录默认 `/app/data/plugins`。
@@ -77,7 +77,8 @@ plugins:
 ### 3.3 上传
 
 1. 管理员登录 `/admin/plugins`，上传
-   `stream-timing-0.1.4-am1.1-apikey-0.2.21.s2plugin`（不是外层 ZIP）。
+   `stream-timing-0.1.4-am1.1-apikey-0.2.22.s2plugin`（不是外层 ZIP）。0.2.21 及更早的包
+   声明的是旧宿主范围，在新宿主上会显示「不兼容」，不要为了上传去改宿主版本串。
 2. 确认：签名「已验证」、兼容「当前版本已测试」、状态「已停用」、只有一条
    API Key 绑定且为关闭。
 3. 保存配置 `{"mode":"off"}`，执行「测试」（本地配置校验，不访问上游）。
@@ -135,7 +136,12 @@ Content-Type: application/json
 
 命令与结果见交付目录 `verification/验证报告.md`。摘要：
 
-- 宿主 `go build ./...`、`go vet`、`go test ./internal/service` 全量通过。
+- 宿主 `go build ./...`、`go vet`、`go test ./internal/service` 通过（0.2.22 合并后复跑；
+  两个与本插件无关的既有失败：`TestOllamaProbeCallback_StaleLongDoesNotOverrideNewShort`
+  在上游 v0.2.22 原样代码上同样失败；Windows 未安装 POSIX `sh` 时
+  `internal/repository` 的 `TestPgDumper*` 无法启动 `pg_dump`。两者在合并前基线上一模一样）。
+- 0.2.22 合并后按更新后的清单重新签名出包，真实插件进程用例
+  （`go test ./internal/service -run TestAPIKeyPlugin`）全部通过；插件二进制与 UI 字节未变。
 - 新增测试覆盖：路由边界、私有标记不可伪造、公网 IP 限制、真实进程流、`mode=off`
   逐字节透传、非流式、错误、取消、重试、数据库不可读时范围不变，以及账号分组范围的
   规范化、旧数据默认全部分组、账号命中/跳过与在线更新。
@@ -184,20 +190,41 @@ Content-Type: application/json
 ```sh
 # 1) 从原包解出 runtimes/* 到 build/ 与 ui/，复制 manifest.source.json
 # 2) 清单只保留 API Key 能力，并声明真实验证过的宿主版本
-# 3) 用站点自己的私钥签名（私钥放在包目录外）
-go run ./cmd/packager -root <pkgroot> -key <keys>/publisher.private \
-  -key-id sub2api-apikey-stream-timing-20261104 -out <pkgroot>/dist/<name>.s2plugin
-# 4) 只读校验
-go run tools/verify-package.go <pkg>.s2plugin <pub>.public
+cd <plugin-dir>/source
+go run ./cmd/packager -root <plugin-dir>/pkgroot \
+  -key <plugin-dir>/.keys/stream-timing.publisher.private \
+  -key-id sub2api-apikey-stream-timing-20261104 \
+  -out dist/stream-timing-0.1.4-am1.1-apikey-<host>.s2plugin
+# 3) 只读校验（packager 自带；打完包也会自动跑一遍）
+go run ./cmd/packager -root <plugin-dir>/pkgroot \
+  -verify -out dist/stream-timing-0.1.4-am1.1-apikey-<host>.s2plugin
 ```
 
+- `-out` 相对 `-root` 解析（packager 会先 `chdir` 到包根），所以写 `dist/<name>.s2plugin`；
+  `-key` 用绝对路径最稳。仓库里没有 `tools/verify-package.go`，校验统一用上面的 `-verify`。
 - 版本号保持 `0.1.4-am1.1`（插件进程 `GetInfo` 上报该版本，清单必须一致）；派生包用
   SHA256 区分。
 - 同 ID 插件升级会保留已配置的账号分组范围（`all_groups` / `group_ids`），但灰度比例
   重置为 100；升级后需要重新启用并确认范围。
-- 若将来升级宿主版本：先改 `requires.sub2api` 与 `tested_sub2api_versions`，重新签名，
-  在隔离环境重跑第 5 节全部用例，再部署。
+- 若将来升级宿主版本：先改 `requires.sub2api` / `recommended_sub2api_version` /
+  `tested_sub2api_versions`，重新签名，在隔离环境重跑第 5 节全部用例，再部署。
+  `plugin_apikey_integration_test.go` 的宿主版本从 `backend/cmd/server/VERSION` 读取，
+  清单范围必须覆盖该文件声明的版本，否则用例会停在「incompatible」。
 - 不要为通过兼容检查而伪造 `VERSION`、关闭签名校验或跳过登录/二次验证。
+- 构建版本串由 `backend/scripts/resolve-version.sh` 决定：`VERSION` 构建参数 > 精确
+  git tag（`v*` 或数字开头）> `cmd/server/VERSION`。**不要给分支打
+  `0.2.22-apikey-plugin` 这类后缀 tag**——它会被当成预发布版本串，`>=0.2.22` 判定失败，
+  插件页显示不兼容；确实要用镜像 tag 区分分支时，构建时显式传 `VERSION=0.2.22`。
+
+### 8.1 0.2.22 出包记录
+
+| 项 | 值 |
+| --- | --- |
+| 宿主 | 0.2.22（`backend/cmd/server/VERSION`；上游 v0.2.22 + 本地插件/蓝绿改动） |
+| 插件包 | `stream-timing-0.1.4-am1.1-apikey-0.2.22.s2plugin` |
+| 包 SHA256 | `cd625569ddc99009d644d1c980cdea3ec82d62f268e31036e5e823e2e94a7a4c` |
+| 清单范围 | `>=0.2.22 <0.2.23`，`tested_sub2api_versions: ["0.2.22"]` |
+| 变更 | 只改清单与签名；`runtimes/*`、`ui/*` 与 0.2.21 包逐字节一致 |
 
 ## 9. 相关测试
 
