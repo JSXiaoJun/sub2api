@@ -26,6 +26,7 @@ jobs:
       - name: Check deployment scripts
         run: |
           /bin/bash -n deploy/apple-container.sh
+          /bin/bash -n deploy/update-sub2api.sh
           /bin/bash deploy/tests/apple-container-test.sh
           /bin/sh deploy/tests/bluegreen-static-test.sh
           /bin/bash deploy/tests/bluegreen-behavior-test.sh
