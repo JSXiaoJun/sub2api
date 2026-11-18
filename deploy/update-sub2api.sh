@@ -42,6 +42,9 @@ say()  { printf '\n===== %s =====\n' "$*"; }
 info() { printf '  %s\n' "$*"; }
 die()  { printf '\n!!! %s\n' "$*" >&2; exit 1; }
 
+# set -e 下意外失败会静默退出；这里补一行诊断（SIGPIPE 141 之类也能看懂）
+trap 'rc=$?; printf "\n!!! 意外中止：退出码 %s（第 %s 行）\n" "$rc" "${LINENO:-?}" >&2' ERR
+
 cleanup() {
   set +e
   if [ -n "$DB_USER" ]; then
@@ -76,9 +79,12 @@ check_counts() {
 }
 
 verify_live() {
-  local strict=${1:-1} active health ver expect
-  "$BG_DIR/bluegreen.sh" status | sed 's/^/  /'
-  active=$("$BG_DIR/bluegreen.sh" status | awk -F': *' '/^active:/{print $2; exit}')
+  local strict=${1:-1} active health ver expect st
+  # status 只跑一次：管道直接喂给会提前退出的 awk 会让上游吃到 SIGPIPE（141），
+  # 配合 pipefail + set -e 会静默中止。
+  st=$("$BG_DIR/bluegreen.sh" status)
+  printf '%s\n' "$st" | sed 's/^/  /'
+  active=$(printf '%s\n' "$st" | awk -F': *' '/^active:/{print $2}')
   [ -n "$active" ] || die "读不到 active 槽位"
   health=$(curl -fsS --max-time 10 "http://127.0.0.1:8080/health" || true)
   [ "$health" = '{"status":"ok"}' ] || die "入口 /health 异常: ${health:-（无响应）}"
