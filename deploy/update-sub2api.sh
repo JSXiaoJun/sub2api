@@ -11,7 +11,7 @@
 #   ./update-sub2api.sh verify             只做健康 / 版本检查
 #
 # 环境变量:
-#   DEFAULT_TAG=0.2.22-apikey-plugin   读不到仓库版本时的兜底 tag
+#   DEFAULT_TAG=0.2.23-apikey-plugin   读不到仓库版本时的兜底 tag
 #   STOP_OLD=600                       切流后多久停旧槽位（秒）
 #   SKIP_RESTORE_CHECK=1               跳过还原校验（只做 dump 完整性检查，快）
 #   BG_DIR=/opt/sub2api/deploy/bluegreen
@@ -22,7 +22,7 @@ set -euo pipefail
 BG_DIR=${BG_DIR:-/opt/sub2api/deploy/bluegreen}
 DEPLOY_DIR=$(dirname "$BG_DIR")
 IMAGE_REPO=${IMAGE_REPO:-ghcr.io/jsxiaojun/sub2api}
-DEFAULT_TAG=${DEFAULT_TAG:-0.2.22-apikey-plugin}
+DEFAULT_TAG=${DEFAULT_TAG:-0.2.23-apikey-plugin}
 VERSION_URL=${VERSION_URL:-https://raw.githubusercontent.com/JSXiaoJun/sub2api/main/backend/cmd/server/VERSION}
 PG=${PG:-sub2api-postgres}
 STOP_OLD=${STOP_OLD:-600}
