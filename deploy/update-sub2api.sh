@@ -4,17 +4,18 @@
 #   备份 → 还原校验 → 切镜像 → 健康与版本验证
 #
 # 用法:
-#   ./update-sub2api.sh                    备份 + 校验 + 更新到默认 tag
+#   ./update-sub2api.sh                    备份 + 校验 + 更新到最新版本（自动读仓库 VERSION）
 #   ./update-sub2api.sh backup             只备份 + 校验，不动线上
 #   ./update-sub2api.sh update <tag>       备份 + 校验 + 更新到指定 tag
 #   ./update-sub2api.sh rollback           切回上一个槽位（代码回滚，不回滚数据库）
 #   ./update-sub2api.sh verify             只做健康 / 版本检查
 #
 # 环境变量:
-#   DEFAULT_TAG=0.2.22-apikey-plugin   不带参数时使用的镜像 tag
+#   DEFAULT_TAG=0.2.22-apikey-plugin   读不到仓库版本时的兜底 tag
 #   STOP_OLD=600                       切流后多久停旧槽位（秒）
 #   SKIP_RESTORE_CHECK=1               跳过还原校验（只做 dump 完整性检查，快）
 #   BG_DIR=/opt/sub2api/deploy/bluegreen
+#   VERSION_URL=https://raw.githubusercontent.com/JSXiaoJun/sub2api/main/backend/cmd/server/VERSION
 # =============================================================================
 set -euo pipefail
 
@@ -22,6 +23,7 @@ BG_DIR=${BG_DIR:-/opt/sub2api/deploy/bluegreen}
 DEPLOY_DIR=$(dirname "$BG_DIR")
 IMAGE_REPO=${IMAGE_REPO:-ghcr.io/jsxiaojun/sub2api}
 DEFAULT_TAG=${DEFAULT_TAG:-0.2.22-apikey-plugin}
+VERSION_URL=${VERSION_URL:-https://raw.githubusercontent.com/JSXiaoJun/sub2api/main/backend/cmd/server/VERSION}
 PG=${PG:-sub2api-postgres}
 STOP_OLD=${STOP_OLD:-600}
 SKIP_RESTORE_CHECK=${SKIP_RESTORE_CHECK:-0}
@@ -106,7 +108,7 @@ verify_live() {
         if [ "$strict" = "1" ]; then
           die "版本不符: 期望含 $expect，实际 $ver"
         else
-          info "⚠ 当前版本与默认 tag 不一致（期望含 $expect，实际 $ver），可能是回滚状态"
+          info "⚠ 当前版本与目标版本不一致（期望含 $expect，实际 $ver）：可能在回滚状态，或还没升级到最新"
         fi
         ;;
     esac
@@ -117,16 +119,29 @@ verify_live() {
 }
 
 MODE=${1:-update}
-TAG=${2:-$DEFAULT_TAG}
+TAG=${2:-}
 
 case "$MODE" in
   backup|update|rollback|verify) ;;
-  -h|--help|help) sed -n '2,18p' "$0"; exit 0 ;;
-  *) die "未知参数: $MODE（可用: update <tag> | backup | rollback | verify）" ;;
+  -h|--help|help) sed -n '2,19p' "$0"; exit 0 ;;
+  *) die "未知参数: $MODE（可用: update [tag] | backup | rollback | verify）" ;;
 esac
 
 if [ "$MODE" = rollback ]; then
   exec "$BG_DIR/bluegreen.sh" rollback
+fi
+
+# 不带 tag 时，从仓库的 VERSION 推导最新镜像 tag（镜像名固定为 <版本>-apikey-plugin）。
+# 拉不到就回退到脚本里的 DEFAULT_TAG，不让网络问题挡住更新。
+if [ -z "$TAG" ]; then
+  latest_version=$(curl -fsS --max-time 8 "$VERSION_URL" 2>/dev/null | tr -d ' \t\r\n' || true)
+  if printf '%s' "$latest_version" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+$'; then
+    TAG="$latest_version-apikey-plugin"
+    info "自动解析最新版本: $TAG"
+  else
+    TAG="$DEFAULT_TAG"
+    info "读不到仓库最新版本，使用默认 tag: $TAG"
+  fi
 fi
 
 # ---------------------------------------------------------------------------
